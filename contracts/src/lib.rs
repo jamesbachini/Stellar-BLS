@@ -111,40 +111,55 @@ mod test {
         },
     ];
 
-    fn aggregated_pk(env: &Env) -> BytesN<96> {
-        let bls = env.crypto().bls12_381();
-        let mut acc = G1Affine::from_bytes(BytesN::from_array(env, &KEY_PAIRS[0].pk));
-        for kp in KEY_PAIRS.iter().skip(1) {
-            let pk = G1Affine::from_bytes(BytesN::from_array(env, &kp.pk));
-            acc = bls.g1_add(&acc, &pk);
-        }
-        acc.to_bytes()
-    }
 
-    fn aggregated_sig(env: &Env, msg: &BytesN<32>) -> BytesN<192> {
-        let bls = env.crypto().bls12_381();
-        let mut sks: Vec<Fr> = vec![env];
-        for kp in KEY_PAIRS {
-            sks.push_back(Fr::from_bytes(BytesN::from_array(env, &kp.sk)));
-        }
-        let dst = Bytes::from_slice(env, DST.as_bytes());
-        let msg_g2 = bls.hash_to_g2(&msg.clone().into(), &dst);
-        let mut msgs: Vec<G2Affine> = vec![env];
-        for _ in 0..KEY_PAIRS.len() {
-            msgs.push_back(msg_g2.clone());
-        }
-        bls.g2_msm(msgs, sks).to_bytes()
+fn aggregated_pk_for(env: &Env, indices: &[usize]) -> BytesN<96> {
+    let bls = env.crypto().bls12_381();
+    let mut it = indices.iter();
+    let first = it.next().unwrap();
+    let mut acc = G1Affine::from_bytes(BytesN::from_array(env, &KEY_PAIRS[*first].pk));
+    for i in it {
+        let pk = G1Affine::from_bytes(BytesN::from_array(env, &KEY_PAIRS[*i].pk));
+        acc = bls.g1_add(&acc, &pk);
     }
+    acc.to_bytes()
+}
 
-    #[test]
-    fn set_flag_flow() {
-        let e = Env::default();
-        let cli = client(&e);
-        cli.init(&aggregated_pk(&e));
-        assert_eq!(cli.get_flag(), false);
-        let payload = BytesN::<32>::random(&e);
-        let sig = aggregated_sig(&e, &payload);
-        cli.set_flag(&payload, &sig);
-        assert_eq!(cli.get_flag(), true);
+fn aggregated_sig_for(env: &Env, msg: &BytesN<32>, indices: &[usize]) -> BytesN<192> {
+    let bls = env.crypto().bls12_381();
+    let mut sks: Vec<Fr> = vec![env];
+    for i in indices {
+        sks.push_back(Fr::from_bytes(BytesN::from_array(env, &KEY_PAIRS[*i].sk)));
     }
+    let dst = Bytes::from_slice(env, DST.as_bytes());
+    let msg_g2 = bls.hash_to_g2(&msg.clone().into(), &dst);
+    let mut msgs: Vec<G2Affine> = vec![env];
+    for _ in indices {
+        msgs.push_back(msg_g2.clone());
+    }
+    bls.g2_msm(msgs, sks).to_bytes()
+}
+
+#[test]
+fn set_flag_flow_2_of_3() {
+    let e = Env::default();
+    let cli = client(&e);
+    cli.init(&aggregated_pk_for(&e, &[0, 1, 2]));
+    assert_eq!(cli.get_flag(), false);
+    let payload = BytesN::<32>::random(&e);
+    let sig = aggregated_sig_for(&e, &payload, &[0, 2]);
+    cli.set_flag(&payload, &sig);
+    assert_eq!(cli.get_flag(), true);
+}
+
+#[test]
+fn set_flag_flow_3_of_3() {
+    let e = Env::default();
+    let cli = client(&e);
+    cli.init(&aggregated_pk_for(&e, &[0, 1, 2]));
+    assert_eq!(cli.get_flag(), false);
+    let payload = BytesN::<32>::random(&e);
+    let sig = aggregated_sig_for(&e, &payload, &[0, 1, 2]);
+    cli.set_flag(&payload, &sig);
+    assert_eq!(cli.get_flag(), true);
+}
 }
