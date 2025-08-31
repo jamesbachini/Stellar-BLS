@@ -1,4 +1,3 @@
-// soroban-data.js - Generate data for Soroban BLS contract
 import { bls12_381 as bls } from "@noble/curves/bls12-381.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Buffer } from "buffer";
@@ -6,105 +5,86 @@ import { Buffer } from "buffer";
 const toHex = (u8) => {
   if (u8 instanceof Uint8Array || u8 instanceof Buffer) {
     return Buffer.from(u8).toString("hex");
-  } else if (typeof u8.toHex === 'function') {
+  } else if (typeof u8.toHex === "function") {
     return u8.toHex();
   } else {
     return u8.toString();
   }
 };
 
-// Generate N keypairs - use your existing ones for consistency
-const N = 9;
+const N = 3;
 const keypairs = [];
 
-console.log("Generating BLS keypairs for Soroban...\n");
-
+console.log("=== PUBLIC KEYS FOR SOROBAN INIT (96 bytes uncompressed) ===");
 for (let i = 0; i < N; i++) {
   const sk = bls.utils.randomSecretKey();
-  const pkPoint = bls.shortSignatures.getPublicKey(sk);
-  
-  // Get uncompressed public key (96 bytes) for Soroban
-  let pkUncompressed;
-  try {
-    pkUncompressed = pkPoint.toBytes(false); // Try uncompressed
-  } catch {
-    // Fallback: convert hex to bytes (hex is typically uncompressed)
-    const hexStr = pkPoint.toHex();
-    pkUncompressed = Buffer.from(hexStr, 'hex');
-  }
-  
-  keypairs.push({ sk, pkPoint, pkUncompressed });
+  const pkUncompressed = bls.shortSignatures.getPublicKey(sk, false);
+  const pkHex = pkUncompressed.toHex();
+  console.log(`Pubkey #${i + 1} (${pkHex.length}b): ${pkHex}`);
+  keypairs.push({ sk, pkHex });
 }
 
-// Display public keys in Soroban format (96 bytes uncompressed)
-console.log("=== PUBLIC KEYS FOR SOROBAN INIT (96 bytes uncompressed) ===");
-
-const pubkeyHexArray = keypairs.map((kp, i) => {
-  const hex = toHex(kp.pkUncompressed);
-  console.log(`Pubkey #${i + 1} (${kp.pkUncompressed.length}b): 0x${hex}`);
-  return `"${hex}"`;
-});
-
-// DST for BLS signatures
 const dst = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
-console.log(`--dst "${dst}"`);
+const dstHex = Buffer.from(dst, "utf8").toString("hex");
+console.log(`--dst "${dstHex}"`);
 
-// Message to sign - hash to 32 bytes as expected by contract
-const messageText = "flip-the-flag";
-const messageBytes = new TextEncoder().encode(messageText);
-const messageHash = sha256(messageBytes); // 32-byte hash
 
+//const messageHash = sha256(messageBytes); // 32-byte hash
+//const messageHashHex = toHex(messageHash); // 64 hex chars
+//if (messageHashHex.length !== 64) {
+//  throw new Error(`Message hash is not 32 bytes! length=${messageHashHex.length}`);
+//}
 console.log(`\n=== MESSAGE ===`);
+const messageText = "privacy is a right";
+const messageBytes = new TextEncoder().encode(messageText);
+const messageG2Hash = bls.G2.hashToCurve(messageBytes);
+const hexMessageHash = toHex(messageG2Hash);
 console.log(`Original message: "${messageText}"`);
-console.log(`Message hash (32b): 0x${toHex(messageHash)}`);
+console.log(`Message hash (${hexMessageHash.length}b): ${hexMessageHash}`);
+//const messageCurvePoint = bls.G1.hashToCurve(messageBytes);
 
-// Hash to curve for signing (this is what BLS signing expects)
-const messageCurvePoint = bls.G1.hashToCurve(messageBytes);
-
-// Generate signatures for specific signers
-const signerIndices = [0, 3, 7]; // Signers 1, 4, and 8
+const signerIndices = [0, 2]; // Signers #1 and #3
 console.log(`\n=== SIGNATURES ===`);
-console.log(`Signing with signers: ${signerIndices.map(i => i + 1).join(", ")}\n`);
-
-const signatures = signerIndices.map((idx, i) => {
+console.log(`Signing with signers: ${signerIndices.map((i) => i + 1).join(", ")}\n`);
+const signatures = signerIndices.map((idx) => {
   const { sk } = keypairs[idx];
-  const sigPoint = bls.shortSignatures.sign(messageCurvePoint, sk);
-  const sigCompressed = sigPoint.toBytes(); // 48 bytes compressed G2
+    const sigG2 = bls.longSignatures.sign(messageG2Hash, sk);
+    const hexSig = sigG2.toHex();
+    console.log(`Signer #${idx + 1} signature (${hexSig.length}b): ${hexSig}`);
+    return hexSig; 
   
-  console.log(`Signer #${idx + 1} signature (${sigCompressed.length}b): 0x${toHex(sigCompressed)}`);
-  return toHex(sigCompressed);
+  //const sigPoint = bls.shortSignatures.sign(messageCurvePoint, sk);
+  //const hexSig = sigPoint.toHex();
+  //console.log(`Signer #${idx + 1} signature (${hexSig.length}b): ${hexSig}`);
+  //return hexSig;
+  ////const sigUncompressed = sigPoint.toBytes(); // G2 compressed
+  ////return toHex(sigUncompressed);
 });
 
 console.log(`
 === SOROBAN CONTRACT CALLS ===
-soroban contract invoke \\
+stellar contract invoke \\
   --id YOUR_CONTRACT_ID \\
-  --source YOUR_ACCOUNT \\
+  --source james \\
+  --network testnet \\
   -- init \\
-  --pubkeys '[${pubkeyHexArray.join(", ")}]' \\
-  --dst "${dst}"
+  --pk1 ${keypairs[0].pkHex} \\
+  --pk2 ${keypairs[1].pkHex} \\
+  --pk3 ${keypairs[2].pkHex} \\
+  --dst "${dstHex}"
 
-soroban contract invoke \\
+stellar contract invoke \\
   --id YOUR_CONTRACT_ID \\
-  --source YOUR_ACCOUNT \\
+  --source james \\
+  --network testnet \\
   -- authorize \\
-  --message "${toHex(messageHash)}" \\
-  --signer_indices '[${signerIndices.join(", ")}]' \\
-  --sigs '[${signatures.map(s => `"${s}"`).join(", ")}]'
+  --message "${hexMessageHash}" \\
+  --sig1 "${signatures[0]}" \\
+  --sig2 "${signatures[1]}"
 
-soroban contract invoke \\
+stellar contract invoke \\
   --id YOUR_CONTRACT_ID \\
-  --source YOUR_ACCOUNT \\
+  --source james \\
+  --network testnet \\
   -- get_flag
-
-=== SUMMARY ===
-Public Keys: ${keypairs.length} keys, 96 bytes each (uncompressed G1)
-Message Hash: ${messageHash.length} bytes
-Signatures: ${signatures.length} signatures, 192 bytes each (uncompressed G2)
-Threshold: 3 out of ${signatures.length} signatures required
-
-Message hash: "${toHex(messageHash)}"
-Signer indices: [${signerIndices.join(", ")}]
-Signatures:
 `);
-signatures.forEach((sig, i) => console.log(`  ${i}: "${sig}"`));
