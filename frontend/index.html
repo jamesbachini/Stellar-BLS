@@ -26,7 +26,7 @@
   <button id="initBtn">Initialize (store group PK)</button>
   <div id="sourceAccount"></div>
   <p>
-    Message to be signed: <code>Privacy is a right</code><br>
+    Message to be signed: <code id="message"></code><br>
     SHA-256 payload: <code id="payload"></code>
   </p>
   <p>Flag on-chain: <span id="flagVal" class="bad">unknown</span></p>
@@ -51,14 +51,11 @@ const DST = "THRESHOLD-BLS-SIG-V1";
 let source; // wallet to pay tx fees
 const $ = id => document.getElementById(id);
 const toHex = bytes => Array.from(bytes).map(b => b.toString(16).padStart(2,"0")).join("");
-const sha256 = async msg =>
-  new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)));
+const sha256 = async msg => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)));
 const keyPairs = [];
 for (let i = 0; i < 3; i++) {
   const kp = StellarSdk.Keypair.random();
-  // Use raw 32-byte seed of secret key as BLS sk
-  const rawSeed = kp.rawSecretKey().slice(0,32);
-  const sk = rawSeed;
+  const sk = kp.rawSecretKey().slice(0,32);
   const pkCompressed = await bls.getPublicKey(sk);
   const pkUncompressed = PointG1.fromHex(pkCompressed).toRawBytes(false);  // 96 bytes
   keyPairs.push({ stellar: kp, sk, pkUncompressed, signed:false, sigUncompressed:null });
@@ -67,7 +64,9 @@ let aggPkPoint = PointG1.ZERO;
 keyPairs.forEach(w => { aggPkPoint = aggPkPoint.add(PointG1.fromHex(w.pkUncompressed));});
 const aggPk96 = aggPkPoint.toRawBytes(false);
 $("aggPk").textContent = `${toHex(aggPk96).substring(0, 8)}...${toHex(aggPk96).slice(-8)}`;
-const payload32 = await sha256("Privacy is a right");
+const msg = "Free Roman Storm";
+const payload32 = await sha256(msg);
+$("message").textContent = msg;
 $("payload").textContent = toHex(payload32);
 
 const walletsDiv = $("wallets");
@@ -95,9 +94,11 @@ keyPairs.forEach((w,idx)=>{
 let aggregatedSig192 = null;
 function refreshAggregateSig(){
   const signed = keyPairs.filter(w=>w.signed);
-  if (signed.length<2){ $("aggSig").textContent="-- need ≥2 signatures --"; 
-  $("sendBtn").disabled=true; return;}
-
+  if (signed.length<2) {
+    $("aggSig").textContent="-- need ≥2 signatures --"; 
+    $("sendBtn").disabled=true;
+    return;
+  }
   let sigPoint = PointG2.ZERO;
   signed.forEach(w=>{ sigPoint = sigPoint.add(PointG2.fromHex(w.sigUncompressed));});
   aggregatedSig192 = sigPoint.toRawBytes(false);
@@ -115,7 +116,7 @@ async function loadFlag(contractId){
         .addOperation(contract.call("get_flag"))
         .setTimeout(30).build()
     );
-    const val = res.returnValue()?.toString()==="true";
+    const val = StellarSdk.scValToNative(res.result.retval);
     $("flagVal").textContent = val;
     $("flagVal").className = val?"good":"bad";
   }catch(e){ console.error(e);}
@@ -126,26 +127,27 @@ $("initBtn").onclick = async ()=>{
   const contractId = $("contractId").value.trim();
   if (!contractId){alert("Contract id required");return;}
   source = StellarSdk.Keypair.random();
-  $("sourceAccount").textContent = `Wallet created: ${source.publicKey()}`;
+  $("sourceAccount").textContent = `Creating and funding new wallet, please wait...`;
   try{
     await rpc.getAccount(source.publicKey());
   }catch(_){
     await fetch(`https://friendbot-testnet.stellar.org?addr=${source.publicKey()}`);
-    await new Promise(r => setTimeout(r, 10000));
+    await new Promise(r => setTimeout(r, 6000));
     await rpc.getAccount(source.publicKey());
+    $("sourceAccount").textContent = `Wallet created: ${source.publicKey()}`;
   }
 
   const contract = new StellarSdk.Contract(contractId);
   const account = await rpc.getAccount(source.publicKey());
-  const convertedParam = StellarSdk.nativeToScVal(aggPk96, { type: "BytesN" });
-  const tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-    //.addOperation(contract.call("init", [...aggPk96]))
-    .addOperation(contract.call("init", ...convertedParams))
+  const convertedParam = StellarSdk.nativeToScVal(aggPk96, { type: "bytes" });
+  let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
+    .addOperation(contract.call("init", convertedParam))
     .setTimeout(30).build();
+  tx = await rpc.prepareTransaction(tx);
   tx.sign(source);
   try{
     const sendRes = await rpc.sendTransaction(tx);
-    alert("init(): "+sendRes.hash);
+    alert("Contract Initalized: "+sendRes.hash);
     await loadFlag(contractId);
   }catch(e){alert("init failed "+e);}
 };
@@ -154,18 +156,21 @@ $("sendBtn").onclick = async ()=>{
   const contractId = $("contractId").value.trim();
   if (!contractId){alert("Contract id required");return;}
   if (!aggregatedSig192){alert("Need aggregated signature");return;}
-  const source = keyPairs[0].stellar;
   const contract = new StellarSdk.Contract(contractId);
   const account = await rpc.getAccount(source.publicKey());
-  const tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-    .addOperation(contract.call("set_flag",
-        [...payload32],
-        [...aggregatedSig192]))
+  const convertedPayload = StellarSdk.nativeToScVal(payload32, { type: "bytes" });
+  const convertedAggSig = StellarSdk.nativeToScVal(aggregatedSig192, { type: "bytes" });
+  console.log("payload len:", payload32.length);
+  console.log("sig len:", aggregatedSig192.length);
+  let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
+    //.addOperation(contract.call("set_flag", [...payload32], [...aggregatedSig192]))
+    .addOperation(contract.call("set_flag", convertedPayload, convertedAggSig))
     .setTimeout(30).build();
+  tx = await rpc.prepareTransaction(tx);
   tx.sign(source);
   try{
     const {hash} = await rpc.sendTransaction(tx);
-    alert("set_flag(): "+hash);
+    alert("Set Flag Tx Sent: "+hash);
     await loadFlag(contractId);
   }catch(e){alert("set_flag failed "+e);}
 };

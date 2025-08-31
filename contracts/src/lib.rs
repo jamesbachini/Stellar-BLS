@@ -33,6 +33,7 @@ impl ThresholdAccount {
             .instance()
             .set(&DataKey::Dst, &Bytes::from_slice(&env, DST.as_bytes()));
         env.storage().persistent().set(&DataKey::Flag, &false);
+        // Note this can be overwritten if called multiple times (both a feature and a bug)
     }
 
     pub fn set_flag(
