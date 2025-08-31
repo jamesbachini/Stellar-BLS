@@ -1,90 +1,96 @@
+// -------------------------------------------------------------
+// Helper for the "ThresholdAccount" Soroban contract (2-of-3 BLS)
+// -------------------------------------------------------------
+import { randomBytes }      from 'crypto';
+import { Buffer }           from 'buffer';
 import { bls12_381 as bls } from "@noble/curves/bls12-381.js";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { Buffer } from "buffer";
 
-const toHex = (u8) => {
-  if (u8 instanceof Uint8Array || u8 instanceof Buffer) {
-    return Buffer.from(u8).toString("hex");
-  } else if (typeof u8.toHex === "function") {
-    return u8.toHex();
-  } else {
-    return u8.toString();
+const DST = 'THRESHOLD-BLS-SIG-V1';                 // MUST match contract
+const CURVE_ORDER = bls.Fr.ORDER;
+
+// ---------- helpers --------------------------------------------------------
+const toHex = (u8) => Buffer.from(u8).toString('hex');
+const mod   = (a, m = CURVE_ORDER) => ((a % m) + m) % m;
+
+// extended-gcd inverse
+const modInv = (a, m = CURVE_ORDER) => {
+  let [lm, hm] = [1n, 0n];
+  let [low, high] = [mod(a, m), m];
+  while (low > 1n) {
+    const r = high / low;
+    [lm, hm] = [hm - lm * r, lm];
+    [low, high] = [high - low * r, low];
   }
+  return mod(lm, m);
 };
 
-const N = 3;
-const keypairs = [];
+// bigint <--> 32-byte scalar
+const b2u8 = (b) => {
+  const hex = b.toString(16).padStart(64, '0');
+  return Uint8Array.from(Buffer.from(hex, 'hex'));
+};
+const randFr = () => (BigInt('0x' + randomBytes(32).toString('hex')) % CURVE_ORDER);
 
-console.log("=== PUBLIC KEYS FOR SOROBAN INIT (96 bytes uncompressed) ===");
-for (let i = 0; i < N; i++) {
-  const sk = bls.utils.randomSecretKey();
-  const pkUncompressed = bls.shortSignatures.getPublicKey(sk, false);
-  const pkHex = pkUncompressed.toHex();
-  console.log(`Pubkey #${i + 1} (${pkHex.length}b): ${pkHex}`);
-  keypairs.push({ sk, pkHex });
-}
+// ---------- 1. local 2-of-3 DKG (degree-1 polynomial) ----------------------
+const a0 = randFr();               // secret   s
+const a1 = randFr();               // random   a₁
+const f  = (x) => mod(a0 + a1 * x);
 
-const dst = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
-const dstHex = Buffer.from(dst, "utf8").toString("hex");
-console.log(`--dst "${dstHex}"`);
+const shares = [1n, 2n, 3n].map(x => ({ x, y: f(x) }));
+console.log('Secret s       : 0x' + a0.toString(16));
+shares.forEach((s, i) =>
+  console.log(`Share #${i + 1}     : x=${s.x}  y=0x${s.y.toString(16)}`)
+);
 
+// group public key (96-byte **uncompressed** G1)
+const groupPkBytes = bls.getPublicKey(b2u8(a0), /*compressed?*/ false);
+console.log('\n=== GROUP PUBLIC KEY (hex, 96 bytes) ===');
+console.log(toHex(groupPkBytes));
 
-//const messageHash = sha256(messageBytes); // 32-byte hash
-//const messageHashHex = toHex(messageHash); // 64 hex chars
-//if (messageHashHex.length !== 64) {
-//  throw new Error(`Message hash is not 32 bytes! length=${messageHashHex.length}`);
-//}
-console.log(`\n=== MESSAGE ===`);
-const messageText = "privacy is a right";
-const messageBytes = new TextEncoder().encode(messageText);
-const messageG2Hash = bls.G2.hashToCurve(messageBytes);
-const hexMessageHash = toHex(messageG2Hash);
-console.log(`Original message: "${messageText}"`);
-console.log(`Message hash (${hexMessageHash.length}b): ${hexMessageHash}`);
-//const messageCurvePoint = bls.G1.hashToCurve(messageBytes);
+// ---------- 2. prepare message & choose 2 signers -------------------------
+const messageText = 'privacy is a right';
+const msgBytes = new TextEncoder().encode(messageText);
+console.log(`\nMessage         : "${messageText}"`);
 
-const signerIndices = [0, 2]; // Signers #1 and #3
-console.log(`\n=== SIGNATURES ===`);
-console.log(`Signing with signers: ${signerIndices.map((i) => i + 1).join(", ")}\n`);
-const signatures = signerIndices.map((idx) => {
-  const { sk } = keypairs[idx];
-    const sigG2 = bls.longSignatures.sign(messageG2Hash, sk);
-    const hexSig = sigG2.toHex();
-    console.log(`Signer #${idx + 1} signature (${hexSig.length}b): ${hexSig}`);
-    return hexSig; 
-  
-  //const sigPoint = bls.shortSignatures.sign(messageCurvePoint, sk);
-  //const hexSig = sigPoint.toHex();
-  //console.log(`Signer #${idx + 1} signature (${hexSig.length}b): ${hexSig}`);
-  //return hexSig;
-  ////const sigUncompressed = sigPoint.toBytes(); // G2 compressed
-  ////return toHex(sigUncompressed);
-});
+const signerIdx = [0, 2];                   // use share #1 and #3
+console.log(`Using signers    : ${signerIdx.map(i => i + 1).join(', ')}`);
 
+// ---------- 3. Reconstruct secret s from the two shares -------------------
+const xs = signerIdx.map(i => shares[i].x);
+const ys = signerIdx.map(i => shares[i].y);
+const denom = mod(xs[0] - xs[1]);
+const λ0 = mod(-xs[1] * modInv(denom));     // Lagrange coef for share 1
+const λ1 = mod( xs[0] * modInv(denom));     // Lagrange coef for share 3
+const sRec = mod(ys[0] * λ0 + ys[1] * λ1);
+if (sRec !== a0) console.warn('(!) reconstruction mismatch');
+
+// ---------- 4. Make aggregate signature σ (uncompressed, 192 bytes) -------
+const sigCompressed   = await bls.sign(msgBytes, b2u8(sRec), { DST });
+//const sigPoint        = bls.G2.ProjectivePoint.fromHex(sigCompressed);
+const sigPoint        = bls.PointG2.fromHex(sigCompressed);
+const sigUncompressed = sigPoint.toRawBytes(false);    // 192 bytes
+console.log('\n=== AGGREGATE SIGNATURE (hex, 192 bytes) ===');
+console.log(toHex(sigUncompressed));
+
+// ---------- 5. Soroban CLI snippets ---------------------------------------
 console.log(`
-=== SOROBAN CONTRACT CALLS ===
-stellar contract invoke \\
-  --id YOUR_CONTRACT_ID \\
-  --source james \\
+====================  SOROBAN DEMO  ====================
+
+# 1) initialise the custom account with the group public key
+soroban contract invoke \\
+  --id  <CONTRACT_ID> \\
   --network testnet \\
   -- init \\
-  --pk1 ${keypairs[0].pkHex} \\
-  --pk2 ${keypairs[1].pkHex} \\
-  --pk3 ${keypairs[2].pkHex} \\
-  --dst "${dstHex}"
+  --group_pk ${toHex(groupPkBytes)}
 
-stellar contract invoke \\
-  --id YOUR_CONTRACT_ID \\
-  --source james \\
+# 2) call a protected function ('ping')
+#    <ACCOUNT_ADDR> is the address of the custom account
+soroban contract invoke \\
+  --id  <CONTRACT_ID> \\
   --network testnet \\
-  -- authorize \\
-  --message "${hexMessageHash}" \\
-  --sig1 "${signatures[0]}" \\
-  --sig2 "${signatures[1]}"
+  --source <ACCOUNT_ADDR> \\
+  -- ping \\
+  --signature ${toHex(sigUncompressed)}
 
-stellar contract invoke \\
-  --id YOUR_CONTRACT_ID \\
-  --source james \\
-  --network testnet \\
-  -- get_flag
+========================================================
 `);

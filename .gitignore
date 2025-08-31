@@ -1,5 +1,6 @@
 
 contracts/target
+contracts/test_snapshots
 
 # Logs
 logs
