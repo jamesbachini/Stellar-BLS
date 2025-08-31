@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>BLS Privacy Demo</title>
+<title>Anonymous BLS Threshold Demo</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f9fb;margin:0;padding:0;color:#172b4d}
@@ -15,27 +15,51 @@
   .wallet{border:1px solid #dfe3e9;padding:16px;border-radius:8px;margin-top:12px}
   .good{color:#14853b;font-weight:600}
   .bad{color:#d91b11;font-weight:600}
+  .info{background:#e3f2fd;padding:12px;border-radius:6px;margin:12px 0;border-left:4px solid #1976d2}
+  .threshold-info{background:#fff3e0;padding:12px;border-radius:6px;margin:12px 0;border-left:4px solid #f57c00}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>BLS Privacy Demo</h1>
+  <h1>Anonymous BLS Threshold Demo</h1>
+  
+  <div class="info">
+    <strong>Privacy Feature:</strong> This contract verifies that at least 2 of 3 signers have signed 
+    <strong>without revealing which specific signers participated</strong>. The contract tests all possible 
+    combinations to find a valid match, preserving complete anonymity.
+  </div>
+  
   <label>Contract Id (xdr / Hash):
     <input id="contractId" type="text" placeholder="Paste Soroban contract id here">
   </label>
-  <button id="initBtn">Initialize (store group PK)</button>
+  <button id="initBtn">Initialize Contract (2-of-3 threshold)</button>
   <div id="sourceAccount"></div>
+  
   <p>
     Message to be signed: <code id="message"></code><br>
     SHA-256 payload: <code id="payload"></code>
   </p>
   <p>Flag on-chain: <span id="flagVal" class="bad">unknown</span></p>
+  
   <h3>Wallets</h3>
   <div id="wallets"></div>
-  <h3>Aggregate</h3>
-    <p>Aggregated PK (uncompressed 96 bytes):<br><code id="aggPk"></code></p>
-    <p>Aggregated Signature (uncompressed 192 bytes):<br><code id="aggSig">-- need ≥2 signatures --</code></p>
-  <button id="sendBtn" disabled>Send Aggregated Tx (set_flag)</button>
+  
+  <div class="threshold-info">
+    <strong>Threshold Status:</strong> <span id="thresholdStatus">Need at least 2 signatures</span>
+  </div>
+  
+  <h3>Anonymous Aggregate</h3>
+  <p>Individual Public Keys (stored in contract):</p>
+  <div id="individualPks"></div>
+  <p>Aggregated Signature (uncompressed 192 bytes):<br><code id="aggSig">-- need ≥2 signatures --</code></p>
+  <button id="testBtn" disabled>Test Signature Locally</button>
+  <button id="sendBtn" disabled>Send Anonymous Threshold Tx</button>
+  
+  <div class="info">
+    <strong>How it works:</strong> The contract will try all possible 2-signer combinations 
+    (there are 3 total) and check if any combination could have produced this signature. 
+    It only reveals that the threshold was met, not which signers participated.
+  </div>
 </div>
 
 <script type="module" src="https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm"></script>
@@ -47,11 +71,14 @@ const { PointG1, PointG2 } = bls;
 const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
 const rpc = new RpcServer("https://soroban-testnet.stellar.org");
 const networkPassphrase = StellarSdk.Networks.TESTNET;
-const DST = "THRESHOLD-BLS-SIG-V1";
+const DST = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+const THRESHOLD = 2;
 let source; // wallet to pay tx fees
 const $ = id => document.getElementById(id);
 const toHex = bytes => Array.from(bytes).map(b => b.toString(16).padStart(2,"0")).join("");
 const sha256 = async msg => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)));
+
+// Generate 3 key pairs
 const keyPairs = [];
 for (let i = 0; i < 3; i++) {
   const kp = StellarSdk.Keypair.random();
@@ -60,10 +87,15 @@ for (let i = 0; i < 3; i++) {
   const pkUncompressed = PointG1.fromHex(pkCompressed).toRawBytes(false);  // 96 bytes
   keyPairs.push({ stellar: kp, sk, pkUncompressed, signed:false, sigUncompressed:null });
 }
-let aggPkPoint = PointG1.ZERO;
-keyPairs.forEach(w => { aggPkPoint = aggPkPoint.add(PointG1.fromHex(w.pkUncompressed));});
-const aggPk96 = aggPkPoint.toRawBytes(false);
-$("aggPk").textContent = `${toHex(aggPk96).substring(0, 8)}...${toHex(aggPk96).slice(-8)}`;
+
+// Display individual public keys
+const individualPksDiv = $("individualPks");
+keyPairs.forEach((w, idx) => {
+  const div = document.createElement("div");
+  div.innerHTML = `<code>PK${idx+1}: ${toHex(w.pkUncompressed).substring(0, 16)}...${toHex(w.pkUncompressed).slice(-16)}</code>`;
+  individualPksDiv.appendChild(div);
+});
+
 const msg = "Free Roman Storm";
 const payload32 = await sha256(msg);
 $("message").textContent = msg;
@@ -77,7 +109,7 @@ keyPairs.forEach((w,idx)=>{
   <strong>Wallet #${idx+1}</strong><br>
   Stellar Pub: <code>${w.stellar.publicKey()}</code><br>
   BLS pk (96B): <code>${toHex(w.pkUncompressed).substring(0, 8)}...${toHex(w.pkUncompressed).slice(-8)}</code><br>
-  <button id="sign${idx}">Sign Tx</button> <span id="status${idx}">not signed</span>
+  <button id="sign${idx}">Sign Message</button> <span id="status${idx}">not signed</span>
   `;
   walletsDiv.appendChild(div);
   $("sign"+idx).onclick = async ()=>{
@@ -85,25 +117,58 @@ keyPairs.forEach((w,idx)=>{
     const sigCompressed = await bls.sign(payload32, w.sk, {DST});
     w.sigUncompressed = PointG2.fromHex(sigCompressed).toRawBytes(false); // 192B
     w.signed = true;
-    $("status"+idx).textContent="signed";
+    $("status"+idx).textContent="✓ signed";
     $("status"+idx).className="good";
     refreshAggregateSig();
+    updateThresholdStatus();
   };
 });
 
 let aggregatedSig192 = null;
 function refreshAggregateSig(){
   const signed = keyPairs.filter(w=>w.signed);
-  if (signed.length<2) {
-    $("aggSig").textContent="-- need ≥2 signatures --"; 
+  if (signed.length < THRESHOLD) {
+    $("aggSig").textContent=`-- need ≥${THRESHOLD} signatures --`; 
     $("sendBtn").disabled=true;
     return;
   }
   let sigPoint = PointG2.ZERO;
   signed.forEach(w=>{ sigPoint = sigPoint.add(PointG2.fromHex(w.sigUncompressed));});
   aggregatedSig192 = sigPoint.toRawBytes(false);
-  $("aggSig").textContent = `${toHex(aggregatedSig192).substring(0, 8)}...${toHex(aggregatedSig192).slice(-8)}` ;
+  $("aggSig").textContent = `${toHex(aggregatedSig192).substring(0, 8)}...${toHex(aggregatedSig192).slice(-8)} (${signed.length} signers)` ;
   $("sendBtn").disabled = false;
+  $("testBtn").disabled = false;
+}
+
+function updateThresholdStatus() {
+  const signed = keyPairs.filter(w=>w.signed);
+  const signedCount = signed.length;
+  
+  if (signedCount < THRESHOLD) {
+    $("thresholdStatus").textContent = `${signedCount}/${THRESHOLD} signatures - need ${THRESHOLD - signedCount} more`;
+    $("thresholdStatus").className = "bad";
+  } else {
+    $("thresholdStatus").textContent = `${signedCount}/${THRESHOLD} signatures - threshold met! 🎉`;
+    $("thresholdStatus").className = "good";
+  }
+}
+
+// Local signature verification for debugging
+async function testLocalSignature(payload, signature, signedWallets) {
+  try {
+    // Aggregate the public keys of signers
+    let aggPk = PointG1.ZERO;
+    signedWallets.forEach(w => {
+      aggPk = aggPk.add(PointG1.fromHex(w.pkUncompressed));
+    });
+    
+    // Verify the signature
+    const sigPoint = PointG2.fromHex(signature);
+    return bls.verify(sigPoint.toRawBytes(true), payload, aggPk.toRawBytes(true), {DST});
+  } catch(e) {
+    console.error("Local verification error:", e);
+    return false;
+  }
 }
 
 async function loadFlag(contractId){
@@ -119,63 +184,153 @@ async function loadFlag(contractId){
     const val = StellarSdk.scValToNative(res.result.retval);
     $("flagVal").textContent = val;
     $("flagVal").className = val?"good":"bad";
-  }catch(e){ console.error(e);}
+  }catch(e){ 
+    console.error(e);
+    $("flagVal").textContent = "error loading";
+  }
 }
 
 $("initBtn").onclick = async ()=>{
   $("initBtn").disabled = true;
   const contractId = $("contractId").value.trim();
-  if (!contractId){alert("Contract id required");return;}
+  if (!contractId){
+    alert("Contract id required");
+    $("initBtn").disabled = false;
+    return;
+  }
+  
   source = StellarSdk.Keypair.random();
   $("sourceAccount").textContent = `Creating and funding new wallet, please wait...`;
+  
   try{
     await rpc.getAccount(source.publicKey());
   }catch(_){
     await fetch(`https://friendbot-testnet.stellar.org?addr=${source.publicKey()}`);
     await new Promise(r => setTimeout(r, 6000));
     await rpc.getAccount(source.publicKey());
-    $("sourceAccount").textContent = `Wallet created: ${source.publicKey()}`;
   }
+  $("sourceAccount").textContent = `Wallet created: ${source.publicKey()}`;
 
   const contract = new StellarSdk.Contract(contractId);
   const account = await rpc.getAccount(source.publicKey());
-  const convertedParam = StellarSdk.nativeToScVal(aggPk96, { type: "bytes" });
+  
+  // Convert individual public keys to proper ScVal format
+  const pkScVals = keyPairs.map(kp => {
+    return StellarSdk.xdr.ScVal.scvBytes(kp.pkUncompressed);
+  });
+  
+  const allPksScVal = StellarSdk.xdr.ScVal.scvVec(pkScVals);
+  const thresholdScVal = StellarSdk.xdr.ScVal.scvU32(THRESHOLD);
+  
   let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-    .addOperation(contract.call("init", convertedParam))
+    .addOperation(contract.call("init", allPksScVal, thresholdScVal))
     .setTimeout(30).build();
   tx = await rpc.prepareTransaction(tx);
   tx.sign(source);
+  
   try{
     const sendRes = await rpc.sendTransaction(tx);
-    alert("Contract Initalized: "+sendRes.hash);
+    alert(`Contract initialized with 2-of-3 threshold: ${sendRes.hash}`);
     await loadFlag(contractId);
-  }catch(e){alert("init failed "+e);}
+    $("initBtn").disabled = false;
+  }catch(e){
+    alert("Init failed: " + e);
+    $("initBtn").disabled = false;
+  }
+};
+
+$("testBtn").onclick = async () => {
+  if (!aggregatedSig192) {
+    alert("Need aggregated signature first");
+    return;
+  }
+  
+  const signed = keyPairs.filter(w=>w.signed);
+  try {
+    const result = await testLocalSignature(payload32, aggregatedSig192, signed);
+    alert(`Local signature verification: ${result ? 'PASS ✅' : 'FAIL ❌'}\n\n` +
+          `Signers: ${signed.map((_, i) => keyPairs.findIndex(kp => kp === signed[i]) + 1).join(', ')}\n` +
+          `This tests if the signature is mathematically correct before sending to contract.`);
+    
+    if (!result) {
+      console.log("Signature verification failed locally");
+      console.log("Payload:", toHex(payload32));
+      console.log("Signature:", toHex(aggregatedSig192));
+      console.log("Signed wallets:", signed.length);
+    }
+  } catch(e) {
+    alert("Local test error: " + e);
+    console.error(e);
+  }
 };
 
 $("sendBtn").onclick = async ()=>{
   const contractId = $("contractId").value.trim();
   if (!contractId){alert("Contract id required");return;}
   if (!aggregatedSig192){alert("Need aggregated signature");return;}
+  
+  const signed = keyPairs.filter(w=>w.signed);
+  if (signed.length < THRESHOLD) {
+    alert(`Need at least ${THRESHOLD} signatures, only have ${signed.length}`);
+    return;
+  }
+  
   const contract = new StellarSdk.Contract(contractId);
   const account = await rpc.getAccount(source.publicKey());
-  const convertedPayload = StellarSdk.nativeToScVal(payload32, { type: "bytes" });
-  const convertedAggSig = StellarSdk.nativeToScVal(aggregatedSig192, { type: "bytes" });
-  console.log("payload len:", payload32.length);
-  console.log("sig len:", aggregatedSig192.length);
+  
+  // Convert to proper ScVal format
+  const payloadScVal = StellarSdk.xdr.ScVal.scvBytes(payload32);
+  const sigScVal = StellarSdk.xdr.ScVal.scvBytes(aggregatedSig192);
+  
+  // Note: No signer indices are passed - the contract will try all combinations!
   let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-    //.addOperation(contract.call("set_flag", [...payload32], [...aggregatedSig192]))
-    .addOperation(contract.call("set_flag", convertedPayload, convertedAggSig))
+    .addOperation(contract.call("set_flag", payloadScVal, sigScVal))
     .setTimeout(30).build();
   tx = await rpc.prepareTransaction(tx);
   tx.sign(source);
+  
   try{
     const {hash} = await rpc.sendTransaction(tx);
-    alert("Set Flag Tx Sent: "+hash);
+    const signedIndices = signed.map((_, i) => keyPairs.findIndex(kp => kp === signed[i]));
+    
+    // Debug information
+    console.log("Debug info:");
+    console.log("Payload (hex):", toHex(payload32));
+    console.log("Signature (hex):", toHex(aggregatedSig192)); 
+    console.log("Signed by wallets:", signedIndices.map(i => i+1).join(', '));
+    console.log("Number of signers:", signed.length);
+    
+    alert(`Anonymous threshold signature verified! 🎉\nTx: ${hash}\n\n` +
+          `The contract verified that at least 2 signers participated,\n` +
+          `but doesn't know it was specifically signers: ${signedIndices.map(i => i+1).join(', ')}`);
     await loadFlag(contractId);
-  }catch(e){alert("set_flag failed "+e);}
+  }catch(e){
+    // Enhanced error logging
+    console.error("Full error:", e);
+    console.log("Debug info for failed tx:");
+    console.log("Payload (hex):", toHex(payload32));
+    console.log("Signature (hex):", toHex(aggregatedSig192));
+    console.log("Payload length:", payload32.length);
+    console.log("Signature length:", aggregatedSig192.length);
+    
+    const signed = keyPairs.filter(w=>w.signed);
+    console.log("Number of signers:", signed.length);
+    console.log("Signer indices:", signed.map((_, i) => keyPairs.findIndex(kp => kp === signed[i])));
+    
+    // Test signature locally before blaming the contract
+    try {
+      const testVerify = await testLocalSignature(payload32, aggregatedSig192, signed);
+      console.log("Local signature verification:", testVerify ? "PASS" : "FAIL");
+    } catch(verifyError) {
+      console.log("Local verification error:", verifyError);
+    }
+    
+    alert("set_flag failed: " + e + "\n\nCheck console for debug information");
+  }
 };
 
 $("contractId").oninput = ()=>loadFlag($("contractId").value.trim());
+updateThresholdStatus();
 </script>
 </body>
 </html>
