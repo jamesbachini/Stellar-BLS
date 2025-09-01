@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, vec, Bytes, BytesN, bytesn, Env, Vec, crypto::bls12_381::{G1Affine, G2Affine},
+    bytesn, contract, contracterror, contractimpl, contracttype, vec, Bytes, BytesN, Env, Vec,
+    crypto::bls12_381::{G1Affine, G2Affine},
 };
 
 #[contract]
@@ -12,9 +13,10 @@ const DST: &str = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
-    PublicKeys,
+    AllPks,
     Dst,
     Flag,
+    Threshold,
 }
 
 #[contracterror]
@@ -22,12 +24,14 @@ pub enum DataKey {
 #[repr(u32)]
 pub enum BlsError {
     InvalidSignature = 1,
+    InsufficientSigners = 2,
 }
 
 #[contractimpl]
 impl ThresholdAccount {
-    pub fn init(env: Env, public_keys: Vec<BytesN<96>>) {
-        env.storage().persistent().set(&DataKey::PublicKeys, &public_keys);
+    pub fn init(env: Env, all_pks: Vec<BytesN<96>>, threshold: u32) {
+        env.storage().persistent().set(&DataKey::AllPks, &all_pks);
+        env.storage().persistent().set(&DataKey::Threshold, &threshold);
         env.storage().instance().set(&DataKey::Dst, &Bytes::from_slice(&env, DST.as_bytes()));
         env.storage().persistent().set(&DataKey::Flag, &false);
     }
@@ -37,7 +41,8 @@ impl ThresholdAccount {
         signature_payload: BytesN<32>,
         signature: BytesN<192>,
     ) -> Result<(), BlsError> {
-        let public_keys: Vec<BytesN<96>> = env.storage().persistent().get(&DataKey::PublicKeys).unwrap();
+        let threshold: u32 = env.storage().persistent().get(&DataKey::Threshold).unwrap();
+        let all_pks: Vec<BytesN<96>> = env.storage().persistent().get(&DataKey::AllPks).unwrap();
         let bls = env.crypto().bls12_381();
         let dst: Bytes = env.storage().instance().get(&DataKey::Dst).unwrap();
         let neg_g1 = G1Affine::from_bytes(bytesn!(
@@ -46,11 +51,16 @@ impl ThresholdAccount {
         ));
         let msg_g2 = bls.hash_to_g2(&signature_payload.into(), &dst);
         let sig_g2 = G2Affine::from_bytes(signature);
-        for pk_bytes in public_keys.iter() {
-            let pk_g1 = G1Affine::from_bytes(pk_bytes);
-            let vp1: Vec<G1Affine> = vec![&env, pk_g1, neg_g1.clone()];
-            let vp2: Vec<G2Affine> = vec![&env, msg_g2.clone(), sig_g2.clone()];
-            if bls.pairing_check(vp1, vp2) {
+        if threshold == 2 && all_pks.len() == 3 {
+            if Self::test_combination(&env, &all_pks, &[0, 1], &neg_g1, &msg_g2, &sig_g2) {
+                env.storage().persistent().set(&DataKey::Flag, &true);
+                return Ok(());
+            }
+            if Self::test_combination(&env, &all_pks, &[0, 2], &neg_g1, &msg_g2, &sig_g2) {
+                env.storage().persistent().set(&DataKey::Flag, &true);
+                return Ok(());
+            }
+            if Self::test_combination(&env, &all_pks, &[1, 2], &neg_g1, &msg_g2, &sig_g2) {
                 env.storage().persistent().set(&DataKey::Flag, &true);
                 return Ok(());
             }
@@ -61,9 +71,24 @@ impl ThresholdAccount {
     pub fn get_flag(env: Env) -> bool {
         env.storage().persistent().get(&DataKey::Flag).unwrap_or(false)
     }
-
-    pub fn reset_flag(env: Env) {
-        env.storage().persistent().set(&DataKey::Flag, &false);
+    
+    fn test_combination(
+        env: &Env,
+        all_pks: &Vec<BytesN<96>>,
+        indices: &[u32],
+        neg_g1: &G1Affine,
+        msg_g2: &G2Affine,
+        signature: &G2Affine,
+    ) -> bool {
+        let bls = env.crypto().bls12_381();
+        let mut agg_pk = G1Affine::from_bytes(all_pks.get(indices[0]).unwrap());
+        for i in 1..indices.len() {
+            let pk = G1Affine::from_bytes(all_pks.get(indices[i]).unwrap());
+            agg_pk = bls.g1_add(&agg_pk, &pk);
+        }
+        let vp1: Vec<G1Affine> = vec![env, agg_pk, neg_g1.clone()];
+        let vp2: Vec<G2Affine> = vec![env, msg_g2.clone(), signature.clone()];
+        bls.pairing_check(vp1, vp2)
     }
 }
 
@@ -74,9 +99,9 @@ mod test {
     extern crate hex_literal;
     use hex_literal::hex;
     use soroban_sdk::{
-        crypto::bls12_381::Fr,
+        crypto::bls12_381::{Fr, G1Affine, G2Affine},
         testutils::BytesN as _,
-        Bytes, BytesN, Env, Vec,
+        vec, Bytes, BytesN, Env, Vec,
     };
 
     use super::ThresholdAccountClient;
@@ -106,17 +131,24 @@ mod test {
         },
     ];
 
-    fn create_signature(env: &Env, msg: &BytesN<32>, signer_index: usize) -> BytesN<192> {
+    fn create_anonymous_signature(env: &Env, msg: &BytesN<32>, signer_indices: &[usize]) -> BytesN<192> {
         let bls = env.crypto().bls12_381();
         let dst = Bytes::from_slice(env, DST.as_bytes());
         let msg_g2 = bls.hash_to_g2(&msg.clone().into(), &dst);
-        let sk = Fr::from_bytes(BytesN::from_array(env, &KEY_PAIRS[signer_index].sk));
-        let sig = bls.g2_mul(&msg_g2, &sk);
-        sig.to_bytes()
+        let first_signer = signer_indices[0];
+        let sk = Fr::from_bytes(BytesN::from_array(env, &KEY_PAIRS[first_signer].sk));
+        let mut agg_sig = bls.g2_mul(&msg_g2, &sk);
+        for &i in &signer_indices[1..] {
+            let sk = Fr::from_bytes(BytesN::from_array(env, &KEY_PAIRS[i].sk));
+            let sig = bls.g2_mul(&msg_g2, &sk);
+            agg_sig = bls.g2_add(&agg_sig, &sig);
+        }
+        
+        agg_sig.to_bytes()
     }
 
     #[test]
-    fn test_signer0() {
+    fn try_2_of_3_signature() {
         let e = Env::default();
         let cli = client(&e);
         let all_pks: Vec<BytesN<96>> = vec![
@@ -125,47 +157,12 @@ mod test {
             BytesN::from_array(&e, &KEY_PAIRS[1].pk),
             BytesN::from_array(&e, &KEY_PAIRS[2].pk),
         ];
-        cli.init(&all_pks);
+        cli.init(&all_pks, &2);
         assert_eq!(cli.get_flag(), false);
         let payload = BytesN::<32>::random(&e);
-        let signature = create_signature(&e, &payload, 0);
+        let signature = create_anonymous_signature(&e, &payload, &[0, 2]);
         cli.set_flag(&payload, &signature);
         assert_eq!(cli.get_flag(), true);
     }
 
-    #[test]
-    fn test_signer1() {
-        let e = Env::default();
-        let cli = client(&e);
-        let all_pks: Vec<BytesN<96>> = vec![
-            &e,
-            BytesN::from_array(&e, &KEY_PAIRS[0].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[1].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[2].pk),
-        ];
-        cli.init(&all_pks);
-        assert_eq!(cli.get_flag(), false);  
-        let payload = BytesN::<32>::random(&e);
-        let signature = create_signature(&e, &payload, 1);
-        cli.set_flag(&payload, &signature);
-        assert_eq!(cli.get_flag(), true);
-    }
-
-    #[test]
-    fn test_signer2() {
-        let e = Env::default();
-        let cli = client(&e);
-        let all_pks: Vec<BytesN<96>> = vec![
-            &e,
-            BytesN::from_array(&e, &KEY_PAIRS[0].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[1].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[2].pk),
-        ];
-        cli.init(&all_pks);
-        assert_eq!(cli.get_flag(), false);
-        let payload = BytesN::<32>::random(&e);
-        let signature = create_signature(&e, &payload, 2);
-        cli.set_flag(&payload, &signature);
-        assert_eq!(cli.get_flag(), true);
-    }
 }

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Private BLS Aggregate Signature Demo</title>
+<title>BLS Aggregate Signature Demo</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f9fb;margin:0;padding:0;color:#172b4d}
@@ -21,11 +21,10 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Private BLS Aggregate Signature Demo</h1>
+  <h1>BLS 3/3 Aggregate Signature Demo</h1>
   
   <div class="info">
-    <strong>Privacy Feature:</strong> This contract verifies a <strong>3-of-3 aggregate signature</strong> against a <strong>single aggregate public key</strong>. 
-    The contract has no knowledge of the individual signers, ensuring their identities remain private.
+    This contract verifies a <strong>3-of-3 aggregate signature</strong> against a <strong>single aggregate public key</strong>.
   </div>
   
   <label>Contract Id (xdr / Hash):
@@ -47,16 +46,15 @@
     <strong>Threshold Status:</strong> <span id="thresholdStatus">Need at least 3 signatures</span>
   </div>
   
-  <h3>Anonymous Aggregate</h3>
+  <h3>Aggregate</h3>
   <p>Aggregate Public Key (stored in contract):</p>
   <div id="aggPkDisplay"><code>-- click initialize to generate --</code></div>
   <p>Aggregated Signature (uncompressed 192 bytes):<br><code id="aggSig">-- need ≥3 signatures --</code></p>
   <button id="testBtn" disabled>Test Signature Locally</button>
-  <button id="sendBtn" disabled>Send Anonymous Aggregate Tx</button>
+  <button id="sendBtn" disabled>Send Aggregate Sig Tx</button>
   
   <div class="info">
     <strong>How it works:</strong> The contract only stores the single aggregate public key. It performs one verification of the aggregate signature against this key. 
-    This confirms the signature is valid without revealing which wallets (or even how many) participated.
   </div>
 </div>
 
@@ -239,7 +237,6 @@ $("initBtn").onclick = async ()=>{
 
 $("testBtn").onclick = async () => {
     const signed = keyPairs.filter(w=>w.signed);
-    // Locally verify using the public keys of the *actual* signers
     const localAggPk = createAggregatePublicKey(signed);
     const result = await bls.verify(aggregatedSig192, payload32, localAggPk, {DST});
     alert(`Local signature verification: ${result ? 'PASS ✅' : 'FAIL ❌'}`);
@@ -271,9 +268,9 @@ $("sendBtn").onclick = async ()=>{
   try{
     const {hash} = await rpc.sendTransaction(tx);
     
-    alert(`Anonymous aggregate signature verified! 🎉\nTx: ${hash}\n\n` +
+    alert(`Aggregate signature verified! 🎉\nTx: ${hash}\n\n` +
           `The contract verified the signature against the aggregate public key, \n`+
-          `proving the threshold was met without revealing signer identities.`);
+          `proving the threshold was met.`);
     await loadFlag(contractId);
   }catch(e){
     console.error("Full error:", e?.result?.result?.results[0]?.tr?.result?.result?.message || e);
