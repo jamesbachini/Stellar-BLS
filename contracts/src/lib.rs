@@ -50,7 +50,6 @@ impl RingSigContract {
         }
         c == Fr::from_bytes(sig.challenge)
     }
-
 }
 
 
