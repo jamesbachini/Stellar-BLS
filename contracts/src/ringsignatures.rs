@@ -1,0 +1,154 @@
+#![no_std]
+
+use soroban_sdk::{
+    contract, contractimpl, contracttype, Bytes, BytesN, Env, Vec, vec, crypto::bls12_381::{Fr, G1Affine},
+};
+
+const G1_GENERATOR: [u8; 96] = [
+    0x17, 0xf1, 0xd3, 0xa7, 0x31, 0x97, 0xd7, 0x94, 0x26, 0x95, 0x63, 0x8c, 0x4f, 0xa9, 0xac, 0x0f,
+    0xc3, 0x68, 0x8c, 0x4f, 0x97, 0x74, 0xb9, 0x05, 0xa1, 0x4e, 0x3a, 0x3f, 0x17, 0x1b, 0xac, 0x58,
+    0x6c, 0x55, 0xe8, 0x3f, 0xf9, 0x7a, 0x1a, 0xef, 0xfb, 0x3a, 0xf0, 0x0a, 0xdb, 0x22, 0xc6, 0xbb,
+    0x11, 0x4d, 0x1d, 0x68, 0x55, 0xd5, 0x45, 0xa8, 0xaa, 0x7d, 0x76, 0xc8, 0xcf, 0x2e, 0x21, 0xf2,
+    0x67, 0x81, 0x6a, 0xef, 0x1d, 0xb5, 0x07, 0xc9, 0x66, 0x55, 0xb9, 0xd5, 0xca, 0xac, 0x42, 0x36,
+    0x4e, 0x6f, 0x38, 0xba, 0x0e, 0xcb, 0x75, 0x1b, 0xad, 0x54, 0xdc, 0xd6, 0xb9, 0x39, 0xc2, 0xca,
+];
+
+#[derive(Clone)]
+#[contracttype]
+pub struct RingSignature {
+    pub challenge: BytesN<32>,
+    pub responses: Vec<BytesN<32>>,
+}
+
+#[contract]
+pub struct RingSigContract;
+
+#[contractimpl]
+impl RingSigContract {
+
+    pub fn verify(env: Env, msg: Bytes, ring: Vec<BytesN<96>>, sig: RingSignature) -> bool {
+        if ring.is_empty() || ring.len() != sig.responses.len() {
+            return false;
+        }
+        let bls   = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &G1_GENERATOR));
+        let mut base = Bytes::new(&env);
+        for pk in ring.iter() {
+            base.append(&pk.into());
+        }
+        base.append(&msg);
+        let mut c = Fr::from_bytes(sig.challenge.clone());
+        for j in 0..ring.len() {
+            let r_j = Fr::from_bytes(sig.responses.get_unchecked(j));
+            let p_j = G1Affine::from_bytes(ring.get_unchecked(j));
+            let x1 = bls.g1_mul(&gen_g, &r_j);
+            let x2 = bls.g1_mul(&p_j  , &c);
+            let xj = bls.g1_add(&x1, &x2);
+            let mut pre = base.clone();
+            pre.append(&xj.to_bytes().into());
+            c = Fr::from_bytes(env.crypto().sha256(&pre).into());
+        }
+        c == Fr::from_bytes(sig.challenge)
+    }
+
+}
+
+
+#[cfg(test)]
+mod test {
+    extern crate std;
+    use super::*;
+    use rand::{rngs::OsRng, RngCore};
+    use soroban_sdk::{testutils::BytesN as _, Bytes};
+
+    fn random_32() -> [u8; 32] {
+        let mut buf = [0u8; 32];
+        OsRng.fill_bytes(&mut buf);
+        buf
+    }
+
+    fn sign(
+        env: &Env,
+        msg: &Bytes,
+        mut ring: Vec<BytesN<96>>,
+        secret_idx: usize,
+        sk: &Fr,
+    ) -> RingSignature {
+        let bls   = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(env, &super::G1_GENERATOR));
+        let pk    = bls.g1_mul(&gen_g, sk).to_bytes();
+        ring.set(secret_idx as u32, pk);
+        let n = ring.len() as usize;
+        let a  = Fr::from_bytes(BytesN::from_array(env, &random_32()));
+        let mut responses: Vec<BytesN<32>> = Vec::new(env);
+        for _ in 0..n {
+            responses.push_back(BytesN::from_array(env, &random_32()));
+        }
+        let mut base = Bytes::new(env);
+        for pk in ring.iter() { base.append(&pk.into()); }
+        base.append(msg);
+        let xs  = bls.g1_mul(&gen_g, &a);
+        let mut pre = base.clone();
+        pre.append(&xs.to_bytes().into());
+        let mut c: Vec<Fr> = Vec::new(env);
+        for _ in 0..n {
+            c.push_back(Fr::from_bytes(BytesN::from_array(env, &[0u8;32])));
+        }
+        let mut idx = (secret_idx + 1) % n;
+        c.set(idx as u32, Fr::from_bytes(env.crypto().sha256(&pre).into()));
+        while idx != secret_idx {
+            let r_i = Fr::from_bytes(responses.get_unchecked(idx as u32));
+            let p_i = G1Affine::from_bytes(ring.get_unchecked(idx as u32));
+            let x1 = bls.g1_mul(&gen_g, &r_i);
+            let x2 = bls.g1_mul(&p_i  , &c.get_unchecked(idx as u32));
+            let xi = bls.g1_add(&x1, &x2);
+            let mut pre2 = base.clone();
+            pre2.append(&xi.to_bytes().into());
+            let ci1 = Fr::from_bytes(env.crypto().sha256(&pre2).into());
+            idx = (idx + 1) % n;
+            c.set(idx as u32, ci1);
+        }
+        let rs = a - c.get_unchecked(secret_idx as u32) * sk.clone();
+        responses.set(secret_idx as u32, rs.to_bytes());
+        RingSignature { challenge: c.get_unchecked(0).to_bytes(), responses }
+    }
+
+    #[test]
+    fn ring_signature_roundtrip() {
+        let env = Env::default();
+        let bls   = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &super::G1_GENERATOR));
+        let mut sks: std::vec::Vec<Fr> = std::vec::Vec::new();
+        let mut ring: Vec<BytesN<96>>  = Vec::new(&env);
+        for _ in 0..3 { // build three random key pairs
+            let sk = Fr::from_bytes(BytesN::from_array(&env, &random_32()));
+            let pk = bls.g1_mul(&gen_g, &sk).to_bytes();
+            sks.push(sk);
+            ring.push_back(pk);
+        }
+        let signer = 1usize;
+        let msg = Bytes::from_slice(&env, b"Ring sig demo");
+        let sig = sign(&env, &msg, ring.clone(), signer, &sks[signer]);
+        let id = env.register_contract(None, RingSigContract);
+        let client = RingSigContractClient::new(&env, &id);
+        assert!(client.verify(&msg, &ring, &sig));
+    }
+
+    #[test]
+    fn bogus_signature_fails() {
+        let env = Env::default();
+        let bls = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &super::G1_GENERATOR));
+        let sk = Fr::from_bytes(BytesN::from_array(&env, &random_32()));
+        let pk = bls.g1_mul(&gen_g, &sk).to_bytes();
+        let ring: Vec<BytesN<96>> = vec![&env, pk];
+        let sig = RingSignature {
+            challenge: BytesN::from_array(&env, &random_32()),
+            responses: vec![&env, BytesN::from_array(&env, &random_32())],
+        };
+        let id     = env.register_contract(None, RingSigContract);
+        let client = RingSigContractClient::new(&env, &id);
+        assert!(!client.verify(&Bytes::from_slice(&env, b"hi"), &ring, &sig));
+    }
+}
+
