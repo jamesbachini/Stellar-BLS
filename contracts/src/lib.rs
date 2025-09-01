@@ -1,171 +1,154 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, vec, Bytes, BytesN, bytesn, Env, Vec, crypto::bls12_381::{G1Affine, G2Affine},
+    contract, contractimpl, contracttype, Bytes, BytesN, Env, Vec, vec, crypto::bls12_381::{Fr, G1Affine},
 };
 
-#[contract]
-pub struct ThresholdAccount;
-
-const DST: &str = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+const G1_GENERATOR: [u8; 96] = [
+    0x17, 0xf1, 0xd3, 0xa7, 0x31, 0x97, 0xd7, 0x94, 0x26, 0x95, 0x63, 0x8c, 0x4f, 0xa9, 0xac, 0x0f,
+    0xc3, 0x68, 0x8c, 0x4f, 0x97, 0x74, 0xb9, 0x05, 0xa1, 0x4e, 0x3a, 0x3f, 0x17, 0x1b, 0xac, 0x58,
+    0x6c, 0x55, 0xe8, 0x3f, 0xf9, 0x7a, 0x1a, 0xef, 0xfb, 0x3a, 0xf0, 0x0a, 0xdb, 0x22, 0xc6, 0xbb,
+    0x11, 0x4d, 0x1d, 0x68, 0x55, 0xd5, 0x45, 0xa8, 0xaa, 0x7d, 0x76, 0xc8, 0xcf, 0x2e, 0x21, 0xf2,
+    0x67, 0x81, 0x6a, 0xef, 0x1d, 0xb5, 0x07, 0xc9, 0x66, 0x55, 0xb9, 0xd5, 0xca, 0xac, 0x42, 0x36,
+    0x4e, 0x6f, 0x38, 0xba, 0x0e, 0xcb, 0x75, 0x1b, 0xad, 0x54, 0xdc, 0xd6, 0xb9, 0x39, 0xc2, 0xca,
+];
 
 #[derive(Clone)]
 #[contracttype]
-pub enum DataKey {
-    PublicKeys,
-    Dst,
-    Flag,
+pub struct RingSignature {
+    pub challenge: BytesN<32>,
+    pub responses: Vec<BytesN<32>>,
 }
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum BlsError {
-    InvalidSignature = 1,
-}
+#[contract]
+pub struct RingSigContract;
 
 #[contractimpl]
-impl ThresholdAccount {
-    pub fn init(env: Env, public_keys: Vec<BytesN<96>>) {
-        env.storage().persistent().set(&DataKey::PublicKeys, &public_keys);
-        env.storage().instance().set(&DataKey::Dst, &Bytes::from_slice(&env, DST.as_bytes()));
-        env.storage().persistent().set(&DataKey::Flag, &false);
-    }
+impl RingSigContract {
 
-    pub fn set_flag(
-        env: Env,
-        signature_payload: BytesN<32>,
-        signature: BytesN<192>,
-    ) -> Result<(), BlsError> {
-        let public_keys: Vec<BytesN<96>> = env.storage().persistent().get(&DataKey::PublicKeys).unwrap();
-        let bls = env.crypto().bls12_381();
-        let dst: Bytes = env.storage().instance().get(&DataKey::Dst).unwrap();
-        let neg_g1 = G1Affine::from_bytes(bytesn!(
-            &env,
-            0x17f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb114d1d6855d545a8aa7d76c8cf2e21f267816aef1db507c96655b9d5caac42364e6f38ba0ecb751bad54dcd6b939c2ca
-        ));
-        let msg_g2 = bls.hash_to_g2(&signature_payload.into(), &dst);
-        let sig_g2 = G2Affine::from_bytes(signature);
-        for pk_bytes in public_keys.iter() {
-            let pk_g1 = G1Affine::from_bytes(pk_bytes);
-            let vp1: Vec<G1Affine> = vec![&env, pk_g1, neg_g1.clone()];
-            let vp2: Vec<G2Affine> = vec![&env, msg_g2.clone(), sig_g2.clone()];
-            if bls.pairing_check(vp1, vp2) {
-                env.storage().persistent().set(&DataKey::Flag, &true);
-                return Ok(());
-            }
+    pub fn verify(env: Env, msg: Bytes, ring: Vec<BytesN<96>>, sig: RingSignature) -> bool {
+        if ring.is_empty() || ring.len() != sig.responses.len() {
+            return false;
         }
-        Err(BlsError::InvalidSignature)
+        let bls   = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &G1_GENERATOR));
+        let mut base = Bytes::new(&env);
+        for pk in ring.iter() {
+            base.append(&pk.into());
+        }
+        base.append(&msg);
+        let mut c = Fr::from_bytes(sig.challenge.clone());
+        for j in 0..ring.len() {
+            let r_j = Fr::from_bytes(sig.responses.get_unchecked(j));
+            let p_j = G1Affine::from_bytes(ring.get_unchecked(j));
+            let x1 = bls.g1_mul(&gen_g, &r_j);
+            let x2 = bls.g1_mul(&p_j  , &c);
+            let xj = bls.g1_add(&x1, &x2);
+            let mut pre = base.clone();
+            pre.append(&xj.to_bytes().into());
+            c = Fr::from_bytes(env.crypto().sha256(&pre).into());
+        }
+        c == Fr::from_bytes(sig.challenge)
     }
 
-    pub fn get_flag(env: Env) -> bool {
-        env.storage().persistent().get(&DataKey::Flag).unwrap_or(false)
-    }
-
-    pub fn reset_flag(env: Env) {
-        env.storage().persistent().set(&DataKey::Flag, &false);
-    }
 }
+
 
 #[cfg(test)]
 mod test {
-    use super::*;
     extern crate std;
-    extern crate hex_literal;
-    use hex_literal::hex;
-    use soroban_sdk::{
-        crypto::bls12_381::Fr,
-        testutils::BytesN as _,
-        Bytes, BytesN, Env, Vec,
-    };
+    use super::*;
+    use rand::{rngs::OsRng, RngCore};
+    use soroban_sdk::{testutils::BytesN as _, Bytes};
 
-    use super::ThresholdAccountClient;
-
-    fn client(e: &Env) -> ThresholdAccountClient<'_> {
-        ThresholdAccountClient::new(e, &e.register(ThresholdAccount {}, ()))
+    fn random_32() -> [u8; 32] {
+        let mut buf = [0u8; 32];
+        OsRng.fill_bytes(&mut buf);
+        buf
     }
 
-    #[derive(Debug)]
-    struct KeyPair {
-        sk: [u8; 32],
-        pk: [u8; 96],
+    fn sign(
+        env: &Env,
+        msg: &Bytes,
+        mut ring: Vec<BytesN<96>>,
+        secret_idx: usize,
+        sk: &Fr,
+    ) -> RingSignature {
+        let bls   = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(env, &super::G1_GENERATOR));
+        let pk    = bls.g1_mul(&gen_g, sk).to_bytes();
+        ring.set(secret_idx as u32, pk);
+        let n = ring.len() as usize;
+        let a  = Fr::from_bytes(BytesN::from_array(env, &random_32()));
+        let mut responses: Vec<BytesN<32>> = Vec::new(env);
+        for _ in 0..n {
+            responses.push_back(BytesN::from_array(env, &random_32()));
+        }
+        let mut base = Bytes::new(env);
+        for pk in ring.iter() { base.append(&pk.into()); }
+        base.append(msg);
+        let xs  = bls.g1_mul(&gen_g, &a);
+        let mut pre = base.clone();
+        pre.append(&xs.to_bytes().into());
+        let mut c: Vec<Fr> = Vec::new(env);
+        for _ in 0..n {
+            c.push_back(Fr::from_bytes(BytesN::from_array(env, &[0u8;32])));
+        }
+        let mut idx = (secret_idx + 1) % n;
+        c.set(idx as u32, Fr::from_bytes(env.crypto().sha256(&pre).into()));
+        while idx != secret_idx {
+            let r_i = Fr::from_bytes(responses.get_unchecked(idx as u32));
+            let p_i = G1Affine::from_bytes(ring.get_unchecked(idx as u32));
+            let x1 = bls.g1_mul(&gen_g, &r_i);
+            let x2 = bls.g1_mul(&p_i  , &c.get_unchecked(idx as u32));
+            let xi = bls.g1_add(&x1, &x2);
+            let mut pre2 = base.clone();
+            pre2.append(&xi.to_bytes().into());
+            let ci1 = Fr::from_bytes(env.crypto().sha256(&pre2).into());
+            idx = (idx + 1) % n;
+            c.set(idx as u32, ci1);
+        }
+        let rs = a - c.get_unchecked(secret_idx as u32) * sk.clone();
+        responses.set(secret_idx as u32, rs.to_bytes());
+        RingSignature { challenge: c.get_unchecked(0).to_bytes(), responses }
     }
 
-    const KEY_PAIRS: &[KeyPair] = &[
-        KeyPair {
-            sk: hex!("18a5ac3cfa6d0b10437a92c96f553311fc0e25500d691ae4b26581e6f925ec83"),
-            pk: hex!("0914e32703bad05ccf4180e240e44e867b26580f36e09331997b2e9effe1f509b1a804fc7ba1f1334c8d41f060dd72550901c5549caef45212a236e288a785d762a087092c769bfa79611b96d73521ddd086b7e05b5c7e4210f50c2ee832e183"),
-        },
-        KeyPair {
-            sk: hex!("738dbecafa122ee3c953f07e78461a4281cadec00c869098bac48c8c57b63374"),
-            pk: hex!("05f4708a013699229f67d0e16f7c2af8a6557d6d11b737286cfb9429e092c31c412f623d61c7de259c33701aa5387b5004e2c03e8b7ea2740b10a5b4fd050eecca45ccf5588d024cbb7adc963006c29d45a38cb7a06ce2ac45fce52fc0d36572"),
-        },
-        KeyPair {
-            sk: hex!("4bff25b53f29c8af15cf9b8e69988c3ff79c80811d5027c80920f92fad8d137d"),
-            pk: hex!("18d0fef68a72e0746f8481fa72b78f945bf75c3a1e036fbbde62a421d8f9568a2ded235a27ad3eb0dc234b298b54dd540f61577bc4c6e8842f8aa953af57a6783924c479e78b0d4959038d3d108b3f6dc6a1b02ec605cb6d789af16cfe67f689"),
-        },
-    ];
+    #[test]
+    fn ring_signature_roundtrip() {
+        let env = Env::default();
+        let bls   = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &super::G1_GENERATOR));
+        let mut sks: std::vec::Vec<Fr> = std::vec::Vec::new();
+        let mut ring: Vec<BytesN<96>>  = Vec::new(&env);
+        for _ in 0..3 { // build three random key pairs
+            let sk = Fr::from_bytes(BytesN::from_array(&env, &random_32()));
+            let pk = bls.g1_mul(&gen_g, &sk).to_bytes();
+            sks.push(sk);
+            ring.push_back(pk);
+        }
+        let signer = 1usize;
+        let msg = Bytes::from_slice(&env, b"Ring sig demo");
+        let sig = sign(&env, &msg, ring.clone(), signer, &sks[signer]);
+        let id = env.register_contract(None, RingSigContract);
+        let client = RingSigContractClient::new(&env, &id);
+        assert!(client.verify(&msg, &ring, &sig));
+    }
 
-    fn create_signature(env: &Env, msg: &BytesN<32>, signer_index: usize) -> BytesN<192> {
+    #[test]
+    fn bogus_signature_fails() {
+        let env = Env::default();
         let bls = env.crypto().bls12_381();
-        let dst = Bytes::from_slice(env, DST.as_bytes());
-        let msg_g2 = bls.hash_to_g2(&msg.clone().into(), &dst);
-        let sk = Fr::from_bytes(BytesN::from_array(env, &KEY_PAIRS[signer_index].sk));
-        let sig = bls.g2_mul(&msg_g2, &sk);
-        sig.to_bytes()
-    }
-
-    #[test]
-    fn test_signer0() {
-        let e = Env::default();
-        let cli = client(&e);
-        let all_pks: Vec<BytesN<96>> = vec![
-            &e,
-            BytesN::from_array(&e, &KEY_PAIRS[0].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[1].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[2].pk),
-        ];
-        cli.init(&all_pks);
-        assert_eq!(cli.get_flag(), false);
-        let payload = BytesN::<32>::random(&e);
-        let signature = create_signature(&e, &payload, 0);
-        cli.set_flag(&payload, &signature);
-        assert_eq!(cli.get_flag(), true);
-    }
-
-    #[test]
-    fn test_signer1() {
-        let e = Env::default();
-        let cli = client(&e);
-        let all_pks: Vec<BytesN<96>> = vec![
-            &e,
-            BytesN::from_array(&e, &KEY_PAIRS[0].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[1].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[2].pk),
-        ];
-        cli.init(&all_pks);
-        assert_eq!(cli.get_flag(), false);  
-        let payload = BytesN::<32>::random(&e);
-        let signature = create_signature(&e, &payload, 1);
-        cli.set_flag(&payload, &signature);
-        assert_eq!(cli.get_flag(), true);
-    }
-
-    #[test]
-    fn test_signer2() {
-        let e = Env::default();
-        let cli = client(&e);
-        let all_pks: Vec<BytesN<96>> = vec![
-            &e,
-            BytesN::from_array(&e, &KEY_PAIRS[0].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[1].pk),
-            BytesN::from_array(&e, &KEY_PAIRS[2].pk),
-        ];
-        cli.init(&all_pks);
-        assert_eq!(cli.get_flag(), false);
-        let payload = BytesN::<32>::random(&e);
-        let signature = create_signature(&e, &payload, 2);
-        cli.set_flag(&payload, &signature);
-        assert_eq!(cli.get_flag(), true);
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &super::G1_GENERATOR));
+        let sk = Fr::from_bytes(BytesN::from_array(&env, &random_32()));
+        let pk = bls.g1_mul(&gen_g, &sk).to_bytes();
+        let ring: Vec<BytesN<96>> = vec![&env, pk];
+        let sig = RingSignature {
+            challenge: BytesN::from_array(&env, &random_32()),
+            responses: vec![&env, BytesN::from_array(&env, &random_32())],
+        };
+        let id     = env.register_contract(None, RingSigContract);
+        let client = RingSigContractClient::new(&env, &id);
+        assert!(!client.verify(&Bytes::from_slice(&env, b"hi"), &ring, &sig));
     }
 }
+

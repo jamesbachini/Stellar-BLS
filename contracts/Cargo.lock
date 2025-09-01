@@ -1360,6 +1360,7 @@ name = "stellarbls"
 version = "0.1.0"
 dependencies = [
  "hex-literal 1.0.0",
+ "rand",
  "soroban-sdk",
 ]
 

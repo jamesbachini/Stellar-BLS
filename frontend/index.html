@@ -2,327 +2,169 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Anonymous BLS Threshold Demo</title>
+<title>Soroban - BLS12-381 Ring-Signature Demo</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f9fb;margin:0;padding:0;color:#172b4d}
-  .wrap{max-width:900px;margin:40px auto;padding:24px;background:white;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.1)}
-  h1{margin-top:0;font-size:1.8rem}
+  body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f5f7fb;margin:0;color:#172b4d}
+  .wrap{max-width:960px;margin:40px auto;padding:24px;background:#fff;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.1)}
+  h1{margin:0 0 20px;font-size:1.8rem}
+  h2{margin:32px 0 12px;font-size:1.3rem}
   input[type=text]{width:100%;padding:8px 12px;font-size:1rem;border:1px solid #dfe1e6;border-radius:6px}
-  button{cursor:pointer;background:#0064ff;color:#fff;border:none;padding:8px 18px;margin:4px 0;border-radius:6px;font-size:.95rem}
+  textarea{width:100%;min-height:70px;padding:8px 12px;font-size:1rem;border:1px solid #dfe1e6;border-radius:6px}
+  button{cursor:pointer;background:#0064ff;color:#fff;border:none;padding:8px 18px;margin:6px 4px;border-radius:6px;font-size:.95rem}
   button:disabled{opacity:.45;cursor:not-allowed}
-  code{font-family:SFMono-Regular,Consolas,monospace;font-size:.85rem;background:#eef3ff;padding:1px 4px;border-radius:4px}
-  .wallet{border:1px solid #dfe3e9;padding:16px;border-radius:8px;margin-top:12px}
-  .good{color:#14853b;font-weight:600}
-  .bad{color:#d91b11;font-weight:600}
-  .info{background:#e3f2fd;padding:12px;border-radius:6px;margin:12px 0;border-left:4px solid #1976d2}
-  .threshold-info{background:#fff3e0;padding:12px;border-radius:6px;margin:12px 0;border-left:4px solid #f57c00}
+  code{font-family:SFMono-Regular,Consolas,monospace;font-size:.85rem;background:#eef2ff;padding:1px 4px;border-radius:4px}
+  .good{color:#128200;font-weight:600}
+  .bad{color:#c90d0d;font-weight:600}
+  .card{border:1px solid #dfe3e9;border-radius:8px;padding:14px;margin-top:12px;background:#fafbfc}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Anonymous BLS Threshold Demo</h1>
-  
-  <div class="info">
-    <strong>Privacy Feature:</strong> This contract verifies that at least 1 of 3 signers has signed 
-    <strong>without revealing which specific signer participated</strong>. The contract tests all 
-    public keys to find a valid match, preserving complete anonymity.
-  </div>
-  
-  <label>Contract Id (xdr / Hash):
-    <input id="contractId" type="text" placeholder="Paste Soroban contract id here">
-  </label>
-  <button id="initBtn">Initialize Contract (1-of-3 threshold)</button>
-  <div id="sourceAccount"></div>
-  
+  <h1>Ring-Signature Private Tx on Soroban</h1>
+
   <p>
-    Message to be signed: <code id="message"></code><br>
-    SHA-256 payload: <code id="payload"></code>
+    Contract&nbsp;Id (already deployed on test-net):<br>
+    <input id="cid" value="CCGODMFRVEVNZJGMOY7LWN3DGLT65BK56Q5W5WQX6NPDX2QBJKOLF264">
   </p>
-  <p>Flag on-chain: <span id="flagVal" class="bad">unknown</span></p>
-  
-  <h3>Wallets</h3>
-  <div id="wallets"></div>
-  
-  <div class="threshold-info">
-    <strong>Threshold Status:</strong> <span id="thresholdStatus">Need at least 1 signature</span>
-  </div>
-  
-  <h3>Signature</h3>
-  <p>Individual Public Keys (stored in contract):</p>
-  <div id="individualPks"></div>
-  <p>Signature (uncompressed 192 bytes):<br><code id="sig">-- need ≥1 signature --</code></p>
-  <button id="testBtn" disabled>Test Signature Locally</button>
-  <button id="sendBtn" disabled>Send Anonymous Threshold Tx</button>
-  
-  <div class="info">
-    <strong>How it works:</strong> The contract will try all public keys (there are 3 total) 
-    and check if any key could have produced this signature. It only reveals that the threshold 
-    was met, not which signer participated.
-  </div>
+
+  <h2>Step&nbsp;1 – Compose a message</h2>
+  <textarea id="msg">Free Roman Storm</textarea><br>
+  <button id="genRing">Generate 3 key-pairs</button>
+
+  <div id="ringArea"></div>
+
+  <h2>Step&nbsp;2 – Choose signer &amp; build ring signature</h2>
+  <p>
+    Signer index (0-based):
+    <input id="idx" type="text" style="width:40px" value="1">
+    <button id="signBtn" disabled>Create signature</button>
+  </p>
+  <pre id="sigOut">signature not yet built</pre>
+
+  <h2>Step&nbsp;3 – Ask contract to verify</h2>
+  <button id="verifyBtn" disabled>Simulate verify()</button>
+  <span id="verResult"></span>
 </div>
 
 <script type="module" src="https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm"></script>
 <script type="module">
+/* ---------- helpers ---------- */
 import * as bls from "https://cdn.jsdelivr.net/npm/@noble/bls12-381/+esm";
 import StellarSdk from "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm";
 
-const { PointG1, PointG2 } = bls;
-const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
-const rpc = new RpcServer("https://soroban-testnet.stellar.org");
-const networkPassphrase = StellarSdk.Networks.TESTNET;
-const DST = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
-const THRESHOLD = 1; // Changed from 2 to 1
-let source; // wallet to pay tx fees
+const {PointG1, utils:U} = bls;
+const CURVE_R = bls.CURVE.r;
+const modR = x => ((x%CURVE_R)+CURVE_R)%CURVE_R;
+const hex = arr => Array.from(arr).map(b=>b.toString(16).padStart(2,"0")).join("");
+const toBytes = big => {
+  let h = big.toString(16).padStart(64,"0").slice(-64);
+  return Uint8Array.from(h.match(/.{2}/g).map(b=>parseInt(b,16)));
+};
+const sha256 = async d => new Uint8Array(await crypto.subtle.digest("SHA-256",d));
+
 const $ = id => document.getElementById(id);
-const toHex = bytes => Array.from(bytes).map(b => b.toString(16).padStart(2,"0")).join("");
-const sha256 = async msg => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)));
+let ring=[];
+let privs=[];
+let sig=null;
+let msgBytes=null;
 
-// Generate 3 key pairs
-const keyPairs = [];
-for (let i = 0; i < 3; i++) {
-  const kp = StellarSdk.Keypair.random();
-  const sk = kp.rawSecretKey().slice(0,32);
-  const pkCompressed = await bls.getPublicKey(sk);
-  const pkUncompressed = PointG1.fromHex(pkCompressed).toRawBytes(false);  // 96 bytes
-  keyPairs.push({ stellar: kp, sk, pkUncompressed, signed:false, sigUncompressed:null });
-}
-
-// Display individual public keys
-const individualPksDiv = $("individualPks");
-keyPairs.forEach((w, idx) => {
-  const div = document.createElement("div");
-  div.innerHTML = `<code>PK${idx+1}: ${toHex(w.pkUncompressed).substring(0, 16)}...${toHex(w.pkUncompressed).slice(-16)}</code>`;
-  individualPksDiv.appendChild(div);
-});
-
-const msg = "Free Roman Storm";
-const payload32 = await sha256(msg);
-$("message").textContent = msg;
-$("payload").textContent = toHex(payload32);
-
-const walletsDiv = $("wallets");
-keyPairs.forEach((w,idx)=>{
-  const div = document.createElement("div");
-  div.className="wallet";
-  div.innerHTML = `
-  <strong>Wallet #${idx+1}</strong><br>
-  Stellar Pub: <code>${w.stellar.publicKey()}</code><br>
-  BLS pk (96B): <code>${toHex(w.pkUncompressed).substring(0, 8)}...${toHex(w.pkUncompressed).slice(-8)}</code><br>
-  <button id="sign${idx}">Sign Message</button> <span id="status${idx}">not signed</span>
-  `;
-  walletsDiv.appendChild(div);
-  $("sign"+idx).onclick = async ()=>{
-    if (w.signed) return;
-    const sigCompressed = await bls.sign(payload32, w.sk, {DST});
-    w.sigUncompressed = PointG2.fromHex(sigCompressed).toRawBytes(false); // 192B
-    w.signed = true;
-    $("status"+idx).textContent="✓ signed";
-    $("status"+idx).className="good";
-    refreshSignature();
-    updateThresholdStatus();
-  };
-});
-
-let signature192 = null;
-function refreshSignature(){
-  const signed = keyPairs.filter(w=>w.signed);
-  if (signed.length < THRESHOLD) {
-    $("sig").textContent=`-- need ≥${THRESHOLD} signature --`; 
-    $("sendBtn").disabled=true;
-    return;
+$("genRing").onclick = async ()=>{
+  ring=[]; privs=[];
+  $("ringArea").innerHTML="";
+  for(let i=0;i<3;i++){
+    const sk = modR(BigInt("0x"+hex(U.randomBytes(32))));
+    const pk = PointG1.BASE.multiply(sk).toRawBytes(false); // 96B
+    ring.push(pk); privs.push(sk);
+    $("ringArea").innerHTML += `<div class="card">Index ${i}<br>pk: <code>${hex(pk).slice(0,16)}…</code></div>`;
   }
-  
-  // For 1/3 threshold, we just need one signature (use the first one available)
-  signature192 = signed[0].sigUncompressed;
-  $("sig").textContent = `${toHex(signature192).substring(0, 8)}...${toHex(signature192).slice(-8)} (from wallet ${keyPairs.indexOf(signed[0]) + 1})`;
-  $("sendBtn").disabled = false;
-  $("testBtn").disabled = false;
-}
-
-function updateThresholdStatus() {
-  const signed = keyPairs.filter(w=>w.signed);
-  const signedCount = signed.length;
-  
-  if (signedCount < THRESHOLD) {
-    $("thresholdStatus").textContent = `${signedCount}/${THRESHOLD} signatures - need ${THRESHOLD - signedCount} more`;
-    $("thresholdStatus").className = "bad";
-  } else {
-    $("thresholdStatus").textContent = `${signedCount}/${THRESHOLD} signatures - threshold met! 🎉`;
-    $("thresholdStatus").className = "good";
-  }
-}
-
-// Local signature verification for debugging
-async function testLocalSignature(payload, signature, wallet) {
-  try {
-    // Verify the signature against the specific wallet's public key
-    const sigPoint = PointG2.fromHex(signature);
-    return bls.verify(sigPoint.toRawBytes(true), payload, wallet.pkUncompressed, {DST});
-  } catch(e) {
-    console.error("Local verification error:", e);
-    return false;
-  }
-}
-
-async function loadFlag(contractId){
-  if (!contractId || !source) return;
-  try{
-    const contract = new StellarSdk.Contract(contractId);
-    const account = await rpc.getAccount(source.publicKey());
-    const res = await rpc.simulateTransaction(
-      new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-        .addOperation(contract.call("get_flag"))
-        .setTimeout(30).build()
-    );
-    const val = StellarSdk.scValToNative(res.result.retval);
-    $("flagVal").textContent = val;
-    $("flagVal").className = val?"good":"bad";
-  }catch(e){ 
-    console.error(e);
-    $("flagVal").textContent = "error loading";
-  }
-}
-
-$("initBtn").onclick = async ()=>{
-  $("initBtn").disabled = true;
-  const contractId = $("contractId").value.trim();
-  if (!contractId){
-    alert("Contract id required");
-    $("initBtn").disabled = false;
-    return;
-  }
-  
-  source = StellarSdk.Keypair.random();
-  $("sourceAccount").textContent = `Creating and funding new wallet, please wait...`;
-  
-  try{
-    await rpc.getAccount(source.publicKey());
-  }catch(_){
-    await fetch(`https://friendbot-testnet.stellar.org?addr=${source.publicKey()}`);
-    await new Promise(r => setTimeout(r, 6000));
-    await rpc.getAccount(source.publicKey());
-  }
-  $("sourceAccount").textContent = `Wallet created: ${source.publicKey()}`;
-
-  const contract = new StellarSdk.Contract(contractId);
-  const account = await rpc.getAccount(source.publicKey());
-  
-  // Convert individual public keys to proper ScVal format
-  const pkScVals = keyPairs.map(kp => {
-    return StellarSdk.xdr.ScVal.scvBytes(kp.pkUncompressed);
-  });
-  
-  const allPksScVal = StellarSdk.xdr.ScVal.scvVec(pkScVals);
-  
-  let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-    .addOperation(contract.call("init", allPksScVal))
-    .setTimeout(30).build();
-  tx = await rpc.prepareTransaction(tx);
-  tx.sign(source);
-  
-  try{
-    const sendRes = await rpc.sendTransaction(tx);
-    alert(`Contract initialized with 1-of-3 threshold: ${sendRes.hash}`);
-    await loadFlag(contractId);
-    $("initBtn").disabled = false;
-  }catch(e){
-    alert("Init failed: " + e);
-    $("initBtn").disabled = false;
-  }
+  $("signBtn").disabled=false;
+  $("verifyBtn").disabled=true;
+  $("sigOut").textContent="signature not yet built";
+  $("verResult").textContent="";
 };
 
-$("testBtn").onclick = async () => {
-  if (!signature192) {
-    alert("Need signature first");
-    return;
-  }
-  
-  const signed = keyPairs.filter(w=>w.signed);
-  try {
-    // Test against the first signed wallet (for 1/3 threshold)
-    const result = await testLocalSignature(payload32, signature192, signed[0]);
-    alert(`Local signature verification: ${result ? 'PASS ✅' : 'FAIL ❌'}\n\n` +
-          `Signer: Wallet ${keyPairs.indexOf(signed[0]) + 1}\n` +
-          `This tests if the signature is mathematically correct before sending to contract.`);
-    
-    if (!result) {
-      console.log("Signature verification failed locally");
-      console.log("Payload:", toHex(payload32));
-      console.log("Signature:", toHex(signature192));
-      console.log("Wallet public key:", toHex(signed[0].pkUncompressed));
+$("signBtn").onclick = async ()=>{
+  try{
+    msgBytes = new TextEncoder().encode($("msg").value);
+    const n = ring.length;
+    const signer = parseInt($("idx").value);
+    if(isNaN(signer) || signer<0 || signer>=n) return alert("bad signer index");
+    ring[signer] = PointG1.BASE.multiply(privs[signer]).toRawBytes(false);
+    const randFr = ()=>modR(BigInt("0x"+hex(U.randomBytes(32))));
+    const a  = randFr();
+    const responses = Array.from({length:n},randFr);
+    let base = new Uint8Array(ring.length*96 + msgBytes.length);
+    ring.forEach((pk,i)=>base.set(pk,96*i));
+    base.set(msgBytes,ring.length*96);
+    const xs = PointG1.BASE.multiply(a).toRawBytes(false);
+    let pre  = new Uint8Array(base.length + xs.length);
+    pre.set(base); pre.set(xs,base.length);
+    const c=[]; for(let i=0;i<n;i++) c[i]=0n;
+    let idx=(signer+1)%n;
+    c[idx]=modR(BigInt("0x"+hex(await sha256(pre))));
+    while(idx!==signer){
+      const r_i = responses[idx];
+      const p_i = PointG1.fromHex(ring[idx]);
+      const x1  = PointG1.BASE.multiply(r_i);
+      const x2  = p_i.multiply(c[idx]);
+      const xi  = x1.add(x2).toRawBytes(false);
+      let pre2 = new Uint8Array(base.length + xi.length);
+      pre2.set(base); pre2.set(xi,base.length);
+      const ci1 = modR(BigInt("0x"+hex(await sha256(pre2))));
+      idx=(idx+1)%n;
+      c[idx]=ci1;
     }
-  } catch(e) {
-    alert("Local test error: " + e);
-    console.error(e);
-  }
+    const rs = modR(a - c[signer]*privs[signer]);
+    responses[signer]=rs;
+    sig = {
+      challenge: toBytes(c[0]),
+      responses: responses.map(toBytes)
+    };
+    $("sigOut").textContent =
+        `challenge : ${hex(sig.challenge)}\n`+
+        `responses : [${responses.map(r=>hex(toBytes(r)).slice(0,10)+"…").join(", ")}]`;
+    $("verifyBtn").disabled=false;
+    $("verResult").textContent="";
+  }catch(e){alert(e);}
 };
 
-$("sendBtn").onclick = async ()=>{
-  const contractId = $("contractId").value.trim();
-  if (!contractId){alert("Contract id required");return;}
-  if (!signature192){alert("Need signature");return;}
-  
-  const signed = keyPairs.filter(w=>w.signed);
-  if (signed.length < THRESHOLD) {
-    alert(`Need at least ${THRESHOLD} signature, only have ${signed.length}`);
-    return;
-  }
-  
-  const contract = new StellarSdk.Contract(contractId);
-  const account = await rpc.getAccount(source.publicKey());
-  
-  // Convert to proper ScVal format
-  const payloadScVal = StellarSdk.xdr.ScVal.scvBytes(payload32);
-  const sigScVal = StellarSdk.xdr.ScVal.scvBytes(signature192);
-  
-  let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
-    .addOperation(contract.call("set_flag", payloadScVal, sigScVal))
-    .setTimeout(30).build();
-  tx = await rpc.prepareTransaction(tx);
-  tx.sign(source);
-  
+$("verifyBtn").onclick = async ()=>{
   try{
-    const {hash} = await rpc.sendTransaction(tx);
-    const signerIndex = keyPairs.indexOf(signed[0]);
-    
-    // Debug information
-    console.log("Debug info:");
-    console.log("Payload (hex):", toHex(payload32));
-    console.log("Signature (hex):", toHex(signature192)); 
-    console.log("Signed by wallet:", signerIndex + 1);
-    
-    alert(`Anonymous signature verified! 🎉\nTx: ${hash}\n\n` +
-          `The contract verified that at least 1 signer participated,\n` +
-          `but doesn't know it was specifically wallet: ${signerIndex + 1}`);
-    await loadFlag(contractId);
-  }catch(e){
-    // Enhanced error logging
-    console.error("Full error:", e);
-    console.log("Debug info for failed tx:");
-    console.log("Payload (hex):", toHex(payload32));
-    console.log("Signature (hex):", toHex(signature192));
-    console.log("Payload length:", payload32.length);
-    console.log("Signature length:", signature192.length);
-    
-    const signed = keyPairs.filter(w=>w.signed);
-    console.log("Number of signers:", signed.length);
-    console.log("Signer wallet:", keyPairs.indexOf(signed[0]) + 1);
-    
-    // Test signature locally before blaming the contract
-    try {
-      const testVerify = await testLocalSignature(payload32, signature192, signed[0]);
-      console.log("Local signature verification:", testVerify ? "PASS" : "FAIL");
-    } catch(verifyError) {
-      console.log("Local verification error:", verifyError);
-    }
-    
-    alert("set_flag failed: " + e + "\n\nCheck console for debug information");
-  }
+    const cid = $("cid").value.trim();
+    if(!cid) return alert("cid required");
+    const B = StellarSdk.xdr.ScVal.scvBytes;
+    const Vec = a => StellarSdk.xdr.ScVal.scvVec(a);
+    const Sym = s => StellarSdk.xdr.ScVal.scvSymbol(s);
+    const Map = entries => StellarSdk.xdr.ScVal.scvMap(entries.map(
+      ([k,v])=> new StellarSdk.xdr.ScMapEntry({key:Sym(k),val:v})
+    ));
+    const ringVal = Vec(ring.map(pk=>B(pk)));
+    const sigVal  = Map([
+      ["challenge", B(sig.challenge)],
+      ["responses", Vec(sig.responses.map(r=>B(r)))]
+    ]);
+    const msgVal  = B(msgBytes);
+    const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
+    const rpc = new RpcServer("https://soroban-testnet.stellar.org");
+    const network = StellarSdk.Networks.TESTNET;
+    const payer   = StellarSdk.Keypair.random();
+    try{await rpc.getAccount(payer.publicKey());}
+    catch{await fetch(`https://friendbot-testnet.stellar.org?addr=${payer.publicKey()}`);
+          await new Promise(r=>setTimeout(r,4000));}
+    const contract = new StellarSdk.Contract(cid);
+    let tx = new StellarSdk.TransactionBuilder(
+                await rpc.getAccount(payer.publicKey()),
+               {fee:"100",networkPassphrase:network})
+              .addOperation(contract.call("verify", msgVal, ringVal, sigVal))
+              .setTimeout(30).build();
+    const sim = await rpc.simulateTransaction(tx);
+    console.log(sim.result)
+    const ok  = StellarSdk.scValToNative(sim.result.retval);
+    $("verResult").textContent = ok ? "✅  contract returned TRUE" : "❌  contract returned FALSE";
+    $("verResult").className   = ok ? "good" : "bad";
+  }catch(e){alert(e);}
 };
-
-$("contractId").oninput = ()=>loadFlag($("contractId").value.trim());
-updateThresholdStatus();
 </script>
 </body>
 </html>
