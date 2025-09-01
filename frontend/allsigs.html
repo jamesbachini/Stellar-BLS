@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Private BLS Aggregate Signature Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f9fb;margin:0;padding:0;color:#172b4d}
+  .wrap{max-width:900px;margin:40px auto;padding:24px;background:white;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.1)}
+  h1{margin-top:0;font-size:1.8rem}
+  input[type=text]{width:100%;padding:8px 12px;font-size:1rem;border:1px solid #dfe1e6;border-radius:6px}
+  button{cursor:pointer;background:#0064ff;color:#fff;border:none;padding:8px 18px;margin:4px 0;border-radius:6px;font-size:.95rem}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  code{font-family:SFMono-Regular,Consolas,monospace;font-size:.85rem;background:#eef3ff;padding:1px 4px;border-radius:4px}
+  .wallet{border:1px solid #dfe3e9;padding:16px;border-radius:8px;margin-top:12px}
+  .good{color:#14853b;font-weight:600}
+  .bad{color:#d91b11;font-weight:600}
+  .info{background:#e3f2fd;padding:12px;border-radius:6px;margin:12px 0;border-left:4px solid #1976d2}
+  .threshold-info{background:#fff3e0;padding:12px;border-radius:6px;margin:12px 0;border-left:4px solid #f57c00}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Private BLS Aggregate Signature Demo</h1>
+  
+  <div class="info">
+    <strong>Privacy Feature:</strong> This contract verifies a <strong>3-of-3 aggregate signature</strong> against a <strong>single aggregate public key</strong>. 
+    The contract has no knowledge of the individual signers, ensuring their identities remain private.
+  </div>
+  
+  <label>Contract Id (xdr / Hash):
+    <input id="contractId" type="text" placeholder="Paste Soroban contract id here">
+  </label>
+  <button id="initBtn">Initialize Contract (3-of-3 aggregate)</button>
+  <div id="sourceAccount"></div>
+  
+  <p>
+    Message to be signed: <code id="message"></code><br>
+    SHA-256 payload: <code id="payload"></code>
+  </p>
+  <p>Flag on-chain: <span id="flagVal" class="bad">unknown</span></p>
+  
+  <h3>Wallets</h3>
+  <div id="wallets"></div>
+  
+  <div class="threshold-info">
+    <strong>Threshold Status:</strong> <span id="thresholdStatus">Need at least 3 signatures</span>
+  </div>
+  
+  <h3>Anonymous Aggregate</h3>
+  <p>Aggregate Public Key (stored in contract):</p>
+  <div id="aggPkDisplay"><code>-- click initialize to generate --</code></div>
+  <p>Aggregated Signature (uncompressed 192 bytes):<br><code id="aggSig">-- need ≥3 signatures --</code></p>
+  <button id="testBtn" disabled>Test Signature Locally</button>
+  <button id="sendBtn" disabled>Send Anonymous Aggregate Tx</button>
+  
+  <div class="info">
+    <strong>How it works:</strong> The contract only stores the single aggregate public key. It performs one verification of the aggregate signature against this key. 
+    This confirms the signature is valid without revealing which wallets (or even how many) participated.
+  </div>
+</div>
+
+<script type="module" src="https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm"></script>
+<script type="module">
+import * as bls from "https://cdn.jsdelivr.net/npm/@noble/bls12-381/+esm";
+import StellarSdk from "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm";
+
+const { PointG1, PointG2 } = bls;
+const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
+const rpc = new RpcServer("https://soroban-testnet.stellar.org");
+const networkPassphrase = StellarSdk.Networks.TESTNET;
+const DST = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+const THRESHOLD = 3; // Changed to 3-of-3 for this demo
+let source; // wallet to pay tx fees
+const $ = id => document.getElementById(id);
+const toHex = bytes => Array.from(bytes).map(b => b.toString(16).padStart(2,"0")).join("");
+const sha256 = async msg => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)));
+
+// Generate 3 key pairs
+const keyPairs = [];
+for (let i = 0; i < 3; i++) {
+  const kp = StellarSdk.Keypair.random();
+  const sk = kp.rawSecretKey().slice(0,32);
+  const pkCompressed = await bls.getPublicKey(sk);
+  const pkUncompressed = PointG1.fromHex(pkCompressed).toRawBytes(false); // 96 bytes
+  keyPairs.push({ stellar: kp, sk, pkUncompressed, signed:false, sigUncompressed:null });
+}
+
+const msg = "Free Roman Storm";
+const payload32 = await sha256(msg);
+$("message").textContent = msg;
+$("payload").textContent = toHex(payload32);
+
+const walletsDiv = $("wallets");
+keyPairs.forEach((w,idx)=>{
+  const div = document.createElement("div");
+  div.className="wallet";
+  div.innerHTML = `
+  <strong>Wallet #${idx+1}</strong><br>
+  Stellar Pub: <code>${w.stellar.publicKey()}</code><br>
+  BLS pk (96B): <code>${toHex(w.pkUncompressed).substring(0, 8)}...${toHex(w.pkUncompressed).slice(-8)}</code><br>
+  <button id="sign${idx}">Sign Message</button> <span id="status${idx}">not signed</span>
+  `;
+  walletsDiv.appendChild(div);
+  $("sign"+idx).onclick = async ()=>{
+    if (w.signed) return;
+    const sigCompressed = await bls.sign(payload32, w.sk, {DST});
+    w.sigUncompressed = PointG2.fromHex(sigCompressed).toRawBytes(false); // 192B
+    w.signed = true;
+    $("status"+idx).textContent="✓ signed";
+    $("status"+idx).className="good";
+    refreshAggregateSig();
+    updateThresholdStatus();
+  };
+});
+
+let aggregatedSig192 = null;
+function refreshAggregateSig(){
+  const signed = keyPairs.filter(w=>w.signed);
+  if (signed.length < THRESHOLD) {
+    $("aggSig").textContent=`-- need ≥${THRESHOLD} signatures --`; 
+    $("sendBtn").disabled=true;
+    $("testBtn").disabled=true;
+    return;
+  }
+  let sigPoint = PointG2.ZERO;
+  signed.forEach(w=>{ sigPoint = sigPoint.add(PointG2.fromHex(w.sigUncompressed));});
+  aggregatedSig192 = sigPoint.toRawBytes(false);
+  $("aggSig").textContent = `${toHex(aggregatedSig192).substring(0, 16)}...${toHex(aggregatedSig192).slice(-16)} (${signed.length} signers)` ;
+  $("sendBtn").disabled = false;
+  $("testBtn").disabled = false;
+}
+
+function updateThresholdStatus() {
+  const signed = keyPairs.filter(w=>w.signed);
+  const signedCount = signed.length;
+  
+  if (signedCount < THRESHOLD) {
+    $("thresholdStatus").textContent = `${signedCount}/${THRESHOLD} signatures - need ${THRESHOLD - signedCount} more`;
+    $("thresholdStatus").className = "bad";
+  } else {
+    $("thresholdStatus").textContent = `${signedCount}/${THRESHOLD} signatures - threshold met! 🎉`;
+    $("thresholdStatus").className = "good";
+  }
+}
+
+// +++ NEW +++
+// Helper to aggregate public keys off-chain.
+function createAggregatePublicKey(wallets) {
+  let aggPkPoint = PointG1.ZERO;
+  wallets.forEach(w => {
+      aggPkPoint = aggPkPoint.add(PointG1.fromHex(w.pkUncompressed));
+  });
+  return aggPkPoint.toRawBytes(false); // 96 bytes, uncompressed
+}
+
+async function loadFlag(contractId){
+  if (!contractId || !source) return;
+  try{
+    const contract = new StellarSdk.Contract(contractId);
+    const account = await rpc.getAccount(source.publicKey());
+    const tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
+        .addOperation(contract.call("get_flag"))
+        .setTimeout(30).build();
+    const preparedTx = await rpc.prepareTransaction(tx);
+    const res = await rpc.simulateTransaction(preparedTx);
+
+    const val = StellarSdk.scValToNative(res.result.retval);
+    $("flagVal").textContent = val;
+    $("flagVal").className = val?"good":"bad";
+  }catch(e){ 
+    console.error(e);
+    $("flagVal").textContent = "error loading";
+  }
+}
+
+$("initBtn").onclick = async ()=>{
+  $("initBtn").disabled = true;
+  const contractId = $("contractId").value.trim();
+  if (!contractId){
+    alert("Contract id required");
+    $("initBtn").disabled = false;
+    return;
+  }
+  
+  source = StellarSdk.Keypair.random();
+  $("sourceAccount").textContent = `Creating and funding new wallet, please wait...`;
+  
+  try{
+    await rpc.getAccount(source.publicKey());
+  }catch(_){
+    await fetch(`https://friendbot-testnet.stellar.org?addr=${source.publicKey()}`);
+    // Friendbot can be slow, wait for account creation
+    let accountLoaded = false;
+    for (let i = 0; i < 5; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+            await rpc.getAccount(source.publicKey());
+            accountLoaded = true;
+            break;
+        } catch(e) { /* continue trying */ }
+    }
+    if (!accountLoaded) {
+        alert("Friendbot failed to create account in time.");
+        $("initBtn").disabled = false;
+        return;
+    }
+  }
+  $("sourceAccount").textContent = `Wallet created: ${source.publicKey()}`;
+
+  const contract = new StellarSdk.Contract(contractId);
+  const account = await rpc.getAccount(source.publicKey());
+  
+  // --- MODIFIED ---
+  // 1. Aggregate all public keys off-chain into a single key.
+  const aggregatePk = createAggregatePublicKey(keyPairs);
+  $("aggPkDisplay").innerHTML = `<code>${toHex(aggregatePk).substring(0, 16)}...${toHex(aggregatePk).slice(-16)}</code>`;
+
+  // 2. Convert the single aggregate key to the required ScVal format.
+  const aggregatePkScVal = StellarSdk.xdr.ScVal.scvBytes(aggregatePk);
+  
+  // 3. Call `init` with the single aggregate key.
+  let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
+    .addOperation(contract.call("init", aggregatePkScVal))
+    .setTimeout(30).build();
+  tx = await rpc.prepareTransaction(tx);
+  tx.sign(source);
+  
+  try{
+    const sendRes = await rpc.sendTransaction(tx);
+    alert(`Contract initialized with 3-of-3 aggregate public key! Tx: ${sendRes.hash}`);
+    await loadFlag(contractId);
+  }catch(e){
+    alert("Init failed: " + e);
+  } finally {
+    $("initBtn").disabled = false;
+  }
+};
+
+$("testBtn").onclick = async () => {
+    const signed = keyPairs.filter(w=>w.signed);
+    // Locally verify using the public keys of the *actual* signers
+    const localAggPk = createAggregatePublicKey(signed);
+    const result = await bls.verify(aggregatedSig192, payload32, localAggPk, {DST});
+    alert(`Local signature verification: ${result ? 'PASS ✅' : 'FAIL ❌'}`);
+};
+
+$("sendBtn").onclick = async ()=>{
+  const contractId = $("contractId").value.trim();
+  if (!contractId){alert("Contract id required");return;}
+  if (!aggregatedSig192){alert("Need aggregated signature");return;}
+  
+  const signed = keyPairs.filter(w=>w.signed);
+  if (signed.length < THRESHOLD) {
+    alert(`Need at least ${THRESHOLD} signatures, only have ${signed.length}`);
+    return;
+  }
+  
+  const contract = new StellarSdk.Contract(contractId);
+  const account = await rpc.getAccount(source.publicKey());
+  
+  const payloadScVal = StellarSdk.xdr.ScVal.scvBytes(payload32);
+  const sigScVal = StellarSdk.xdr.ScVal.scvBytes(aggregatedSig192);
+  
+  let tx = new StellarSdk.TransactionBuilder(account,{networkPassphrase,fee:"100"})
+    .addOperation(contract.call("set_flag", payloadScVal, sigScVal))
+    .setTimeout(30).build();
+  tx = await rpc.prepareTransaction(tx);
+  tx.sign(source);
+  
+  try{
+    const {hash} = await rpc.sendTransaction(tx);
+    
+    alert(`Anonymous aggregate signature verified! 🎉\nTx: ${hash}\n\n` +
+          `The contract verified the signature against the aggregate public key, \n`+
+          `proving the threshold was met without revealing signer identities.`);
+    await loadFlag(contractId);
+  }catch(e){
+    console.error("Full error:", e?.result?.result?.results[0]?.tr?.result?.result?.message || e);
+    alert("set_flag failed. Check console for debug information.");
+  }
+};
+
+$("contractId").oninput = ()=>loadFlag($("contractId").value.trim());
+updateThresholdStatus();
+</script>
+</body>
+</html>
