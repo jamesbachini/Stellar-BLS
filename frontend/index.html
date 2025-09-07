@@ -4,54 +4,446 @@
 <meta charset="utf-8">
 <title>zkLogin demo – Ring-signatures on Soroban</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
- body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f5f7fb;color:#172b4d;margin:0}
- h1{margin:0 0 16px;font-size:1.8rem}
- button,input{font-size:1rem;padding:8px 14px;border-radius:6px;border:1px solid #ccd}
- button{background:#0653ff;color:#fff;cursor:pointer}
- button:disabled{opacity:.45;cursor:not-allowed}
- #wrap{max-width:780px;margin:36px auto;background:#fff;border-radius:12px;padding:28px;box-shadow:0 8px 18px rgba(0,0,0,.08)}
- .row{margin:14px 0}
- .good{color:#128200;font-weight:600}
- .bad {color:#c90d0d;font-weight:600}
- code{font-family:SFMono-Regular,Consolas,monospace;background:#eef2ff;padding:2px 4px;font-size:.85rem;border-radius:4px}
+:root {
+  --primary: #6366f1;
+  --primary-dark: #4f46e5;
+  --secondary: #06b6d4;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --background: #1a1a1d;
+  --card-bg: #ffffff;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --border: #e2e8f0;
+  --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+  --gradient: linear-gradient(135deg, var(--primary), var(--secondary));
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--background);
+  color: var(--text-primary);
+  line-height: 1.6;
+  padding: 20px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.container {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.header h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-bottom: 10px;
+}
+
+.header p {
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: var(--shadow);
+  margin-bottom: 24px;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.15);
+}
+
+.card-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card-title i {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.input-group {
+  margin-bottom: 20px;
+}
+
+label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.input-with-icon {
+  position: relative;
+}
+
+.input-with-icon input {
+  width: 100%;
+  padding: 14px 16px 14px 48px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+  background: #fefefe;
+}
+
+.input-with-icon input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.input-with-icon i {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+}
+
+.counter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f1f5f9;
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin-top: 10px;
+}
+
+.counter-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 24px;
+  border: none;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: var(--primary);
+  color: white;
+  box-shadow: 0 4px 6px rgba(99, 102, 241, 0.2);
+}
+
+.btn:hover {
+  background: var(--primary-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 12px rgba(99, 102, 241, 0.25);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-secondary {
+  background: white;
+  color: var(--primary);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: #f8fafc;
+  border-color: var(--primary);
+}
+
+.btn-success {
+  background: var(--success);
+  box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);
+}
+
+.btn-success:hover {
+  background: #0da271;
+  box-shadow: 0 6px 12px rgba(16, 185, 129, 0.25);
+}
+
+.btn-warning {
+  background: var(--warning);
+  box-shadow: 0 4px 6px rgba(245, 158, 11, 0.2);
+}
+
+.btn-warning:hover {
+  background: #d97706;
+  box-shadow: 0 6px 12px rgba(245, 158, 11, 0.25);
+}
+
+.btn-group {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.status {
+  padding: 16px;
+  border-radius: 12px;
+  margin-top: 20px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-success {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.status-error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.status-info {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+#status {
+  text-align: center;
+  color: var(--success);
+  margin-bottom: 20px;
+}
+
+.footer {
+  text-align: center;
+  margin-top: 40px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.footer a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  text-decoration: underline;
+}
+
+.ring-size-input {
+  width: 80px;
+  text-align: center;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: var(--primary);
+  color: white;
+  border-radius: 50%;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+@media (max-width: 768px) {
+  .header h1 {
+    font-size: 2rem;
+  }
+  
+  .card {
+    padding: 24px;
+  }
+  
+  .btn-group {
+    flex-direction: column;
+    width: 100%;
+  }
+  
+  .btn {
+    width: 100%;
+  }
+  
+  .input-with-icon input {
+    padding: 12px 16px 12px 44px;
+  }
+}
+
+.loading {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: white;
+  animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.progress-bar {
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.progress {
+  height: 100%;
+  background: var(--gradient);
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.5s ease;
+}
 </style>
 </head>
 <body>
-<div id="wrap">
-  <h1>zkLogin demo</h1>
-
-  Contract&nbsp;Id
-  <input id="cid" style="width:460px" placeholder="ex. CCGODMFRVEVNZJGM…"><br>
-
-  <div class="row">
-    On-chain login counter: <span id="counter">–</span>
+<div class="container">
+  <div class="header">
+    <h1>Soroban Zero-Knowledge Login</h1>
   </div>
 
-  <div class="row">
-    <button id="mkWallet">1 — Create & fund wallet (payer)</button>
-    &nbsp;<span id="payer"></span>
+  <div class="card">
+    <div class="input-group">
+      <label for="cid">Contract ID</label>
+      <div class="input-with-icon">
+        <i class="fas fa-file-contract"></i>
+        <input id="cid" type="text" placeholder="e.g. CCGODM...NZJGM">
+      </div>
+    </div>
+
+    <div class="counter">
+      <div>
+        <div>On-chain login counter</div>
+        <div class="counter-value" id="counter">–</div>
+      </div>
+      <i class="fas fa-chart-line" style="font-size: 2rem; color: #c7d2fe;"></i>
+    </div>
   </div>
 
-  <div class="row">
-    Ring&nbsp;size <input id="ringSize" value="3" style="width:50px">
-    <button id="genRing" disabled>2 — Generate ring &amp; init contract</button>
+  <div id="status" class="status status-info">
+    <i class="fas fa-sync-alt"></i>
+    <span>Waiting for initialization...</span>
   </div>
 
-  <div id="walletBtns" class="row"></div>
+  <div class="card">
+    <h3 class="card-title">
+      <i class="fas fa-wallet"></i>
+      Wallet Setup
+    </h3>
+    
+    <button id="mkWallet" class="btn">
+      <i class="fas fa-plus-circle"></i>
+      <span class="step-number">1</span> Create & Fund Wallet
+    </button>
+    
+    <div class="progress-bar">
+      <div class="progress" id="walletProgress"></div>
+    </div>
+    
+    <div id="payer" class="status status-info" style="display: none;">
+      <i class="fas fa-info-circle"></i>
+      <span>Wallet will appear here after creation</span>
+    </div>
+  </div>
 
-  <div class="row" id="status"></div>
+  <div class="card">
+    <h3 class="card-title">
+      <i class="fas fa-users"></i>
+      Ring Signature Setup
+    </h3>
+    
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+      <label for="ringSize" style="margin-bottom: 0;">Ring size:</label>
+      <input id="ringSize" type="number" min="3" max="10" value="3" class="ring-size-input">
+    </div>
+    
+    <button id="genRing" class="btn btn-secondary" disabled>
+      <i class="fas fa-cogs"></i>
+      <span class="step-number">2</span> Generate Ring & Init Contract
+    </button>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">
+      <i class="fas fa-user-check"></i>
+      Authentication
+    </h3>
+    
+    <div id="walletBtns" class="btn-group">
+      <p>Complete the previous steps to enable authentication</p>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>Built with ❤️ on <a href="https://stellar.org">Stellar</a></p>
+  </div>
 </div>
 
-<!--  ------------------------------------------------------------------
-      Main logic
-     ------------------------------------------------------------------ -->
 <script type="module" src="https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm"></script>
 <script type="module">
 import StellarSdk from "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm";
 
-const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
-const rpc       = new RpcServer("https://soroban-testnet.stellar.org");
+const RpcServer  = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
+const rpc        = new RpcServer("https://soroban-testnet.stellar.org");
 const NETWORK_P  = StellarSdk.Networks.TESTNET;
 const $          = id => document.getElementById(id);
 const scv        = StellarSdk.xdr.ScVal;
@@ -61,13 +453,10 @@ const U32        = n => scv.scvU32(n);
 const Sym        = s => scv.scvSymbol(s);
 const Map        = kv=>scv.scvMap(kv.map(([k,v])=>new StellarSdk.xdr.ScMapEntry({key:Sym(k),val:v})));
 
-let payerKp   = null;           // Keypair that pays for all tx
-let keyRing   = null;           // {ring:[Uint8Array96], secret_keys:[Uint8Array32]}
-let contract  = null;           // StellarSdk.Contract instance
+let payerKp   = null;
+let contract  = null;
+let keyRing   = null; // {ring:[Uint8Array96], secret_keys:[Uint8Array32]}
 
-/* ------------------------------------------------------------------ *
- *  Helpers                                                           *
- * ------------------------------------------------------------------ */
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
 async function fund(keypair){
@@ -82,20 +471,13 @@ async function loadAcc(pub){
   return acc;
 }
 
-/* Build, simulate, sign & send a contract-call                            */
 async function invoke(method, ...args){
   if(!payerKp) throw "payer not ready";
-  const tx = new StellarSdk.TransactionBuilder(
-               await loadAcc(payerKp.publicKey()),
-              {fee:"10000",networkPassphrase:NETWORK_P})
-             .addOperation(contract.call(method,...args))
-             .setTimeout(30)
-             .build();
-  /* server will add footprint & auth */
+  const tx = new StellarSdk.TransactionBuilder(await loadAcc(payerKp.publicKey()), {fee:"10000",networkPassphrase:NETWORK_P})
+    .addOperation(contract.call(method,...args)).setTimeout(30).build();
   const prepared = await rpc.prepareTransaction(tx);
   prepared.sign(payerKp);
   const sent = await rpc.sendTransaction(prepared);
-  /* wait for confirmation */
   while(true){
     const r = await rpc.getTransaction(sent.hash);
     if(r.status==="SUCCESS") return r;
@@ -104,7 +486,6 @@ async function invoke(method, ...args){
   }
 }
 
-/* Only simulate – return the XDR ScVal result                             */
 async function simulate(method, ...args){
   if(!payerKp) throw "payer not ready";
   const tx = new StellarSdk.TransactionBuilder(
@@ -117,9 +498,6 @@ async function simulate(method, ...args){
   return sim.result.retval;         // XDR › ScVal
 }
 
-/* ------------------------------------------------------------------ *
- *  UI actions                                                        *
- * ------------------------------------------------------------------ */
 $("mkWallet").onclick = async ()=>{
   clearStatus();
   payerKp = StellarSdk.Keypair.random();
@@ -134,20 +512,16 @@ $("genRing").onclick = async ()=>{
   if(!$("cid").value.trim()) return alert("Enter contract id first!");
   contract = new StellarSdk.Contract( $("cid").value.trim() );
   const N  = parseInt($("ringSize").value)||3;
-
   setStatus("Simulating create_keys()");
   const res = await simulate("create_keys", U32(N));
-  keyRing   = StellarSdk.scValToNative(res);    // {secret_keys, ring}
-
-  /* Initialise contract on-chain with the fresh ring */
+  keyRing   = StellarSdk.scValToNative(res);
   setStatus("Sending init() transaction");
   await invoke("init", Vec(keyRing.ring.map(Bytes)));
-
-  /* make login buttons */
   $("walletBtns").innerHTML = "<b>Wallets:</b><br>";
   keyRing.secret_keys.forEach((sk,i)=>{
     const b = document.createElement("button");
     b.textContent = `Sign-in with wallet ${i}`;
+    b.classList = 'btn'
     b.onclick      = ()=>login(i);
     $("walletBtns").appendChild(b);
     $("walletBtns").appendChild(document.createTextNode(" "));
@@ -167,13 +541,10 @@ async function login(idx){
                     Bytes(keyRing.secret_keys[idx])
                   );
   const sigJS  = StellarSdk.scValToNative(sigXdr);     // {challenge,responses}
-
-  /* Build RingSignature map param */
   const sigVal = Map([
     ["challenge", Bytes(sigJS.challenge)],
     ["responses", Vec(sigJS.responses.map(Bytes))]
   ]);
-
   setStatus("Sending verify() tx …");
   const txRes = await invoke("verify", msg, sigVal);
   console.log(txRes.returnValue)
@@ -184,15 +555,12 @@ async function login(idx){
   await refreshCounter();
 }
 
-/* ------------------------------------------------------------------ *
- *  Misc                                                              *
- * ------------------------------------------------------------------ */
 async function refreshCounter(){
   if(!contract||!payerKp) return;
   const x = await simulate("get_login_count");
   $("counter").textContent = StellarSdk.scValToNative(x).toString();
 }
-setInterval(refreshCounter, 6000);   // keep counter fresh
+setInterval(refreshCounter, 6000);
 
 function setStatus(msg,good){
   $("status").textContent = msg;
