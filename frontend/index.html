@@ -1,285 +1,207 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Soroban Ring Signature Demo</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-sdk/11.3.0/stellar-sdk.js"></script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 700px; margin: 2rem auto; padding: 0 1rem; background-color: #f8f9fa; color: #343a40; }
-        h1, h2 { color: #212529; }
-        .container { background-color: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .status { margin-bottom: 1rem; padding: 1rem; border-radius: 4px; background-color: #e9ecef; }
-        .status-label { font-weight: bold; }
-        .status-value { font-family: monospace; word-break: break-all; }
-        button { background-color: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; font-size: 16px; cursor: pointer; transition: background-color 0.2s; margin: 5px 0; }
-        button:hover:not(:disabled) { background-color: #0056b3; }
-        button:disabled { background-color: #6c757d; cursor: not-allowed; }
-        .wallets-container { margin-top: 1rem; }
-        .loader { margin-top: 1rem; font-style: italic; color: #6c757d; min-height: 1.5em;}
-    </style>
+<meta charset="utf-8">
+<title>zkLogin demo – Ring-signatures on Soroban</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f5f7fb;color:#172b4d;margin:0}
+ h1{margin:0 0 16px;font-size:1.8rem}
+ button,input{font-size:1rem;padding:8px 14px;border-radius:6px;border:1px solid #ccd}
+ button{background:#0653ff;color:#fff;cursor:pointer}
+ button:disabled{opacity:.45;cursor:not-allowed}
+ #wrap{max-width:780px;margin:36px auto;background:#fff;border-radius:12px;padding:28px;box-shadow:0 8px 18px rgba(0,0,0,.08)}
+ .row{margin:14px 0}
+ .good{color:#128200;font-weight:600}
+ .bad {color:#c90d0d;font-weight:600}
+ code{font-family:SFMono-Regular,Consolas,monospace;background:#eef2ff;padding:2px 4px;font-size:.85rem;border-radius:4px}
+</style>
 </head>
-
 <body>
-    <div class="container">
-        <h1>zkLogin Demo (Client-Side)</h1>
-        <div class="status">
-            <span class="status-label">On-chain login counter: </span>
-            <span id="login-counter" class="status-value">...</span>
-        </div>
-        <hr>
+<div id="wrap">
+  <h1>zkLogin demo</h1>
 
-        <h2>Step 1: Create Temporary Wallet</h2>
-        <button id="create-wallet-btn">Create & Fund Wallet</button>
-        <div id="wallet-status" class="status" style="display: none;">
-            <span class="status-label">Temporary Account: </span>
-            <span id="address" class="status-value"></span>
-        </div>
-        <hr>
+  Contract&nbsp;Id
+  <input id="cid" style="width:460px" placeholder="ex. CCGODMFRVEVNZJGM…"><br>
 
-        <h2>Step 2: Setup Contract</h2>
-        <p>This will use the account above to call the contract twice: first to generate keys, then to initialize the public ring on-chain.</p>
-        <label for="ring-size">Ring size: </label>
-        <select id="ring-size">
-            <option value="3">3</option>
-            <option value="5">5</option>
-            <option value="7">7</option>
-        </select>
-        <button id="init-contract-btn" disabled>Generate Ring & Initialise Contract</button>
-        <div class="status">
-            <span class="status-label">Testnet Contract ID: </span>
-            <span id="contract-id" class="status-value"></span>
-        </div>
-        <hr>
+  <div class="row">
+    On-chain login counter: <span id="counter">–</span>
+  </div>
 
-        <h2>Step 3: Sign In</h2>
-        <div id="wallets-container">
-            <p>Complete Step 2 to see sign-in options.</p>
-        </div>
+  <div class="row">
+    <button id="mkWallet">1 — Create & fund wallet (payer)</button>
+    &nbsp;<span id="payer"></span>
+  </div>
 
-        <div id="loading-status" class="loader"></div>
-    </div>
+  <div class="row">
+    Ring&nbsp;size <input id="ringSize" value="3" style="width:50px">
+    <button id="genRing" disabled>2 — Generate ring &amp; init contract</button>
+  </div>
 
-    <script>
-        // --- 2. SETUP & CONFIGURATION ---
-        const CONTRACT_ID = "CC3OPFNRGCTLG33VXFMMUKNFMLZJ662ZT64NZJQ2ZO4SKYVVGR5M6KQB";
-        const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
-        const server = new RpcServer("https://soroban-testnet.stellar.org", { allowHttp: true });
-        const networkPassphrase = StellarSdk.Networks.TESTNET;
+  <div id="walletBtns" class="row"></div>
 
-        // --- STATE MANAGEMENT ---
-        let sourceKeypair = null;
-        let secretKeys = [];
-        let loginCountInterval = null;
+  <div class="row" id="status"></div>
+</div>
 
-        // --- DOM ELEMENTS ---
-        const createWalletBtn = document.getElementById('create-wallet-btn');
-        const initContractBtn = document.getElementById('init-contract-btn');
-        const loginCounterEl = document.getElementById('login-counter');
-        const loadingStatusEl = document.getElementById('loading-status');
-        const contractIdEl = document.getElementById('contract-id');
-        
-        // --- UI HELPER ---
-        function setLoadingText(text) {
-            loadingStatusEl.textContent = text;
-        }
+<!--  ------------------------------------------------------------------
+      Main logic
+     ------------------------------------------------------------------ -->
+<script type="module" src="https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm"></script>
+<script type="module">
+import StellarSdk from "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk/+esm";
 
-        // --- SOROBAN INTERACTION CORE ---
-        /**
-         * A generic helper function to invoke a contract function.
-         * @param {string} functionName - The name of the function to call.
-         * @param {StellarSdk.xdr.ScVal[]} args - An array of ScVal arguments.
-         * @param {boolean} isReadOnly - If true, simulates the transaction instead of sending it.
-         * @returns The native JavaScript result from the contract.
-         */
-        async function invokeContract(functionName, args = [], isReadOnly = false) {
-            if (!sourceKeypair && !isReadOnly) {
-                throw new Error("Source account not initialized.");
-            }
+const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
+const rpc       = new RpcServer("https://soroban-testnet.stellar.org");
+const NETWORK_P  = StellarSdk.Networks.TESTNET;
+const $          = id => document.getElementById(id);
+const scv        = StellarSdk.xdr.ScVal;
+const Vec        = a => scv.scvVec(a);
+const Bytes      = u8=>scv.scvBytes(u8);
+const U32        = n => scv.scvU32(n);
+const Sym        = s => scv.scvSymbol(s);
+const Map        = kv=>scv.scvMap(kv.map(([k,v])=>new StellarSdk.xdr.ScMapEntry({key:Sym(k),val:v})));
 
-            const sourceAccount = await server.getAccount(sourceKeypair.publicKey());
-            const contract = new StellarSdk.Contract(CONTRACT_ID);
-            const op = contract.call(functionName, ...args);
-            
-            const txBuilder = new StellarSdk.TransactionBuilder(sourceAccount, {
-                fee: StellarSdk.BASE_FEE,
-                networkPassphrase,
-            }).addOperation(op);
+let payerKp   = null;           // Keypair that pays for all tx
+let keyRing   = null;           // {ring:[Uint8Array96], secret_keys:[Uint8Array32]}
+let contract  = null;           // StellarSdk.Contract instance
 
-            const tx = txBuilder.build();
+/* ------------------------------------------------------------------ *
+ *  Helpers                                                           *
+ * ------------------------------------------------------------------ */
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
-            // For read-only queries, we only need to simulate
-            if (isReadOnly) {
-                const simulated = await server.simulateTransaction(tx);
-                if (StellarSdk.SorobanRpc.isSimulationError(simulated)) {
-                    throw simulated;
-                }
-                return StellarSdk.scValToNative(simulated.result.retval);
-            }
-            
-            setLoadingText("Simulating transaction...");
-            const simulated = await server.simulateTransaction(tx);
-             if (StellarSdk.SorobanRpc.isSimulationError(simulated)) {
-                throw new Error(`Transaction simulation failed: ${simulated.error}`);
-            }
-            
-            // Modify the transaction with the recommended resource values from the simulation
-            const restoredTx = StellarSdk.SorobanRpc.assembleTransaction(tx, simulated).build();
-            restoredTx.sign(sourceKeypair);
+async function fund(keypair){
+  await fetch(`https://friendbot-testnet.stellar.org?addr=${keypair.publicKey()}`);
+}
 
-            setLoadingText("Submitting transaction...");
-            const sendResponse = await server.sendTransaction(restoredTx);
-            
-            if (sendResponse.status !== 'PENDING') {
-                throw new Error(`Failed to send transaction: ${sendResponse.errorResult?.result?.diagnosticEvents[0]?.event?.body?.value()?.lo()?.toString() || 'Unknown error'}`);
-            }
+async function loadAcc(pub){
+  let acc; while(true){
+    try{ acc = await rpc.getAccount(pub); break; }
+    catch{ await sleep(1500); }
+  }
+  return acc;
+}
 
-            setLoadingText("Waiting for transaction confirmation...");
-            let getResponse = await server.getTransaction(sendResponse.hash);
-            
-            // Poll for completion
-            while (getResponse.status === 'NOT_FOUND') {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                getResponse = await server.getTransaction(sendResponse.hash);
-            }
+/* Build, simulate, sign & send a contract-call                            */
+async function invoke(method, ...args){
+  if(!payerKp) throw "payer not ready";
+  const tx = new StellarSdk.TransactionBuilder(
+               await loadAcc(payerKp.publicKey()),
+              {fee:"10000",networkPassphrase:NETWORK_P})
+             .addOperation(contract.call(method,...args))
+             .setTimeout(30)
+             .build();
+  /* server will add footprint & auth */
+  const prepared = await rpc.prepareTransaction(tx);
+  prepared.sign(payerKp);
+  const sent = await rpc.sendTransaction(prepared);
+  /* wait for confirmation */
+  while(true){
+    const r = await rpc.getTransaction(sent.hash);
+    if(r.status==="SUCCESS") return r;
+    if(r.status==="FAILED")  throw "tx failed";
+    await sleep(1000);
+  }
+}
 
-            if (getResponse.status === 'SUCCESS') {
-                return StellarSdk.scValToNative(getResponse.resultXdr);
-            } else {
-                 throw new Error(`Transaction failed with status: ${getResponse.status}`);
-            }
-        }
+/* Only simulate – return the XDR ScVal result                             */
+async function simulate(method, ...args){
+  if(!payerKp) throw "payer not ready";
+  const tx = new StellarSdk.TransactionBuilder(
+               await loadAcc(payerKp.publicKey()),
+              {fee:"100",networkPassphrase:NETWORK_P})
+             .addOperation(contract.call(method,...args))
+             .setTimeout(30)
+             .build();
+  const sim = await rpc.simulateTransaction(tx);
+  return sim.result.retval;         // XDR › ScVal
+}
 
-        // --- CORE FUNCTIONS ---
-        async function getLoginCount() {
-            try {
-                const count = await invokeContract("get_login_count", [], true);
-                loginCounterEl.textContent = Number(count).toString();
-            } catch (error) {
-                console.warn("Could not fetch login count:", error);
-                loginCounterEl.textContent = "0 (contract may not be initialized)";
-            }
-        }
+/* ------------------------------------------------------------------ *
+ *  UI actions                                                        *
+ * ------------------------------------------------------------------ */
+$("mkWallet").onclick = async ()=>{
+  clearStatus();
+  payerKp = StellarSdk.Keypair.random();
+  setStatus("Requesting friendbot…");
+  await fund(payerKp);
+  $("payer").innerHTML = `<code>${payerKp.publicKey().slice(0,16)}…</code>`;
+  $("genRing").disabled = false;
+  setStatus("Wallet funded ✅");
+};
 
-        async function initAccount() {
-            setLoadingText("Creating and funding account with Friendbot... (this may take a few seconds)");
-            createWalletBtn.disabled = true;
-            sourceKeypair = StellarSdk.Keypair.random();
-            const publicKey = sourceKeypair.publicKey();
-            document.getElementById('address').textContent = publicKey;
-            document.getElementById('wallet-status').style.display = 'block';
+$("genRing").onclick = async ()=>{
+  if(!$("cid").value.trim()) return alert("Enter contract id first!");
+  contract = new StellarSdk.Contract( $("cid").value.trim() );
+  const N  = parseInt($("ringSize").value)||3;
 
-            try {
-                await server.getAccount(publicKey);
-                console.log("Account already exists.");
-            } catch (e) {
-                try {
-                    await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`);
-                    console.log('Account funded successfully!');
-                } catch (fundError) {
-                    console.error('ERROR!', fundError);
-                    setLoadingText("Error funding account. Please try again.");
-                    createWalletBtn.disabled = false;
-                    return;
-                }
-            }
-            setLoadingText("");
-            initContractBtn.disabled = false;
-        }
+  setStatus("Simulating create_keys()");
+  const res = await simulate("create_keys", U32(N));
+  keyRing   = StellarSdk.scValToNative(res);    // {secret_keys, ring}
 
-        async function handleInitContract() {
-            initContractBtn.disabled = true;
-            const ringSize = parseInt(document.getElementById('ring-size').value, 10);
-            
-            try {
-                // Step 1: Call `create_keys` to get all keys from the contract
-                setLoadingText("Step 1/2: Calling 'create_keys' on-chain...");
-                const ringSizeScVal = StellarSdk.nativeToScVal(ringSize, { type: 'u32' });
-                const keysResult = await invokeContract("create_keys", [ringSizeScVal]);
+  /* Initialise contract on-chain with the fresh ring */
+  setStatus("Sending init() transaction");
+  await invoke("init", Vec(keyRing.ring.map(Bytes)));
 
-                secretKeys = keysResult.secret_keys.map(key => key.toString('hex'));
-                const publicRingScVal = StellarSdk.nativeToScVal(keysResult.ring);
+  /* make login buttons */
+  $("walletBtns").innerHTML = "<b>Wallets:</b><br>";
+  keyRing.secret_keys.forEach((sk,i)=>{
+    const b = document.createElement("button");
+    b.textContent = `Sign-in with wallet ${i}`;
+    b.onclick      = ()=>login(i);
+    $("walletBtns").appendChild(b);
+    $("walletBtns").appendChild(document.createTextNode(" "));
+  });
+  await refreshCounter();
+  setStatus("Ring initialised on-chain ✅");
+};
 
-                // Step 2: Call `init` with the public part of the keys
-                setLoadingText("Step 2/2: Calling 'init' to store the public ring...");
-                await invokeContract("init", [publicRingScVal]);
-                
-                alert("Contract initialized successfully!");
-                renderWallets();
+async function login(idx){
+  clearStatus();
+  const msg = Bytes(new TextEncoder().encode("zkLogin"));
+  setStatus(`Simulating sign() for wallet ${idx}`);
+  const sigXdr = await simulate("sign",
+                    msg,
+                    Vec(keyRing.ring.map(Bytes)),
+                    U32(idx),
+                    Bytes(keyRing.secret_keys[idx])
+                  );
+  const sigJS  = StellarSdk.scValToNative(sigXdr);     // {challenge,responses}
 
-                // Start polling for login count now that we are initialized
-                await getLoginCount();
-                if(loginCountInterval) clearInterval(loginCountInterval);
-                loginCountInterval = setInterval(getLoginCount, 5000);
+  /* Build RingSignature map param */
+  const sigVal = Map([
+    ["challenge", Bytes(sigJS.challenge)],
+    ["responses", Vec(sigJS.responses.map(Bytes))]
+  ]);
 
-            } catch (error) {
-                console.error(error);
-                alert(`Error during contract setup: ${error.message}`);
-                initContractBtn.disabled = false;
-            } finally {
-                setLoadingText("");
-            }
-        }
+  setStatus("Sending verify() tx …");
+  const txRes = await invoke("verify", msg, sigVal);
+  console.log(txRes.returnValue)
+  const ok = StellarSdk.scValToNative(txRes.returnValue);
+  if(ok){ setStatus("✅ login successful", true); }
+  else  { setStatus("❌ verify returned false", false); }
 
-        async function handleSignIn(secretKeyHex, secretIndex) {
-            document.querySelectorAll('#wallets-container button').forEach(b => b.disabled = true);
-            try {
-                const msg = "zkLogin Demo Message";
-                const msgBuffer = new TextEncoder().encode(msg);
+  await refreshCounter();
+}
 
-                // Step 1: Call `sign` to get a signature from the contract
-                setLoadingText("Step 1/2: Calling 'sign' on-chain...");
-                const signArgs = [
-                    StellarSdk.nativeToScVal(msgBuffer),
-                    StellarSdk.nativeToScVal([]), // Empty ring for this implementation
-                    StellarSdk.nativeToScVal(secretIndex, { type: 'u32' }),
-                    StellarSdk.nativeToScVal(Buffer.from(secretKeyHex, 'hex'))
-                ];
-                const signatureResult = await invokeContract("sign", signArgs);
-                
-                // Step 2: Call `verify` with the obtained signature
-                setLoadingText("Step 2/2: Calling 'verify' on-chain...");
-                const verifyArgs = [
-                    StellarSdk.nativeToScVal(msgBuffer),
-                    StellarSdk.nativeToScVal(signatureResult),
-                ];
-                const verification = await invokeContract("verify", verifyArgs);
+/* ------------------------------------------------------------------ *
+ *  Misc                                                              *
+ * ------------------------------------------------------------------ */
+async function refreshCounter(){
+  if(!contract||!payerKp) return;
+  const x = await simulate("get_login_count");
+  $("counter").textContent = StellarSdk.scValToNative(x).toString();
+}
+setInterval(refreshCounter, 6000);   // keep counter fresh
 
-                if (verification === true) {
-                    alert("Sign-in successful! The on-chain counter has been incremented.");
-                    await getLoginCount();
-                } else {
-                    alert("Verification failed on-chain.");
-                }
-
-            } catch (error) {
-                console.error(error);
-                alert(`Sign-in failed: ${error.message}`);
-            } finally {
-                setLoadingText("");
-                document.querySelectorAll('#wallets-container button').forEach(b => b.disabled = false);
-            }
-        }
-        
-        function renderWallets() {
-            const container = document.getElementById('wallets-container');
-            container.innerHTML = '<h3>Wallets</h3>';
-            secretKeys.forEach((key, index) => {
-                const btn = document.createElement('button');
-                btn.textContent = `Sign In With Wallet ${index + 1}`;
-                btn.onclick = () => handleSignIn(key, index);
-                container.appendChild(btn);
-            });
-        }
-        
-        // --- INITIALIZATION ---
-        document.addEventListener('DOMContentLoaded', () => {
-            contractIdEl.textContent = CONTRACT_ID;
-            createWalletBtn.addEventListener('click', initAccount);
-            initContractBtn.addEventListener('click', handleInitContract);
-            getLoginCount(); // Initial call
-        });
-    </script>
+function setStatus(msg,good){
+  $("status").textContent = msg;
+  $("status").className   = good===undefined ? "" : good ? "good" : "bad";
+}
+function clearStatus(){ setStatus(""); }
+setTimeout(() => {
+    $('cid').value = 'CDVTXHUTBL5K44SDEN35LNYMS4Z6XVKD2WQCVIP2JPU4CKPFWDTE5F2C';
+}, 1000);
+</script>
 </body>
 </html>
