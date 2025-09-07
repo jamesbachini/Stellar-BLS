@@ -22,6 +22,12 @@ pub struct RingSignature {
 }
 
 #[contracttype]
+pub struct KeyRingResult {
+    pub secret_keys: Vec<BytesN<32>>,
+    pub ring: Vec<BytesN<96>>,
+}
+
+#[contracttype]
 pub enum DataKey {
     Ring,
     LoginCount,
@@ -34,7 +40,6 @@ pub struct RingSigContract;
 impl RingSigContract {
 
     pub fn init(env: Env, ring: Vec<BytesN<96>>) {
-        // Allows being overwritten for testing
         env.storage().persistent().set(&DataKey::Ring, &ring);
         env.storage().persistent().set(&DataKey::LoginCount, &0u64);
     }
@@ -45,6 +50,80 @@ impl RingSigContract {
 
     pub fn get_login_count(env: Env) -> u64 {
         env.storage().persistent().get(&DataKey::LoginCount).unwrap_or(0u64)
+    }
+
+    pub fn create_keys(env: Env, ring_size: u32) -> KeyRingResult {
+        let bls = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &G1_GENERATOR));
+        let mut ring: Vec<BytesN<96>> = Vec::new(&env);
+        let mut secret_keys: Vec<BytesN<32>> = Vec::new(&env); // To store all secret keys
+        for i in 0..ring_size {
+            let random_bytes = env.crypto().sha256(&env.crypto().sha256(&Bytes::from_slice(&env, &[i as u8; 32])).into());
+            let sk = Fr::from_bytes(random_bytes.into());
+            let pk = bls.g1_mul(&gen_g, &sk).to_bytes();
+            secret_keys.push_back(sk.to_bytes());
+            ring.push_back(pk);
+        }
+        KeyRingResult {
+            secret_keys,
+            ring,
+        }
+    }
+
+    pub fn sign(
+        env: Env,
+        msg: Bytes,
+        ring: Vec<BytesN<96>>,
+        secret_idx: u32,
+        sk: BytesN<32>,
+    ) -> RingSignature {
+        let bls = env.crypto().bls12_381();
+        let gen_g = G1Affine::from_bytes(BytesN::from_array(&env, &G1_GENERATOR));
+        let secret_key = Fr::from_bytes(sk);
+        let mut updated_ring = ring.clone();
+        let pk = bls.g1_mul(&gen_g, &secret_key).to_bytes();
+        updated_ring.set(secret_idx, pk);
+        let n = updated_ring.len() as usize;
+        let secret_idx_usize = secret_idx as usize;
+        let random_a = env.crypto().sha256(&Bytes::from_slice(&env, &[42u8; 32]));
+        let a = Fr::from_bytes(random_a.into());
+        let mut responses: Vec<BytesN<32>> = Vec::new(&env);
+        for i in 0..n {
+            let random_r = env.crypto().sha256(&Bytes::from_slice(&env, &[i as u8 + 100; 32]));
+            responses.push_back(random_r.into());
+        }
+        let mut base = Bytes::new(&env);
+        for pk in updated_ring.iter() {
+            base.append(&pk.into());
+        }
+        base.append(&msg);
+        let xs = bls.g1_mul(&gen_g, &a);
+        let mut pre = base.clone();
+        pre.append(&xs.to_bytes().into());
+        let mut c: Vec<Fr> = Vec::new(&env);
+        for _ in 0..n {
+            c.push_back(Fr::from_bytes(BytesN::from_array(&env, &[0u8; 32])));
+        }
+        let mut idx = (secret_idx_usize + 1) % n;
+        c.set(idx as u32, Fr::from_bytes(env.crypto().sha256(&pre).into()));
+        while idx != secret_idx_usize {
+            let r_i = Fr::from_bytes(responses.get_unchecked(idx as u32));
+            let p_i = G1Affine::from_bytes(updated_ring.get_unchecked(idx as u32));
+            let x1 = bls.g1_mul(&gen_g, &r_i);
+            let x2 = bls.g1_mul(&p_i, &c.get_unchecked(idx as u32));
+            let xi = bls.g1_add(&x1, &x2);
+            let mut pre2 = base.clone();
+            pre2.append(&xi.to_bytes().into());
+            let ci1 = Fr::from_bytes(env.crypto().sha256(&pre2).into());
+            idx = (idx + 1) % n;
+            c.set(idx as u32, ci1);
+        }
+        let rs = a - c.get_unchecked(secret_idx) * secret_key;
+        responses.set(secret_idx, rs.to_bytes());
+        RingSignature {
+            challenge: c.get_unchecked(0).to_bytes(),
+            responses,
+        }
     }
 
     pub fn verify(env: Env, msg: Bytes, sig: RingSignature) -> bool {
@@ -194,5 +273,26 @@ mod test {
         client.init(&ring);
         assert!(!client.verify(&Bytes::from_slice(&env, b"hi"), &sig));
         assert_eq!(client.get_login_count(), 0);
+    }
+
+    #[test]
+    fn test_create_keys_and_sign() {
+        let env = Env::default();
+        let id = env.register(RingSigContract, ());
+        let client = RingSigContractClient::new(&env, &id);
+        let ring_size = 3u32;
+        let key_ring = client.create_keys(&ring_size);
+        let secret_index_to_test = 1u32;
+        let secret_key_to_test = key_ring.secret_keys.get(secret_index_to_test).unwrap();
+        let msg = Bytes::from_slice(&env, b"Test message");
+        let sig = client.sign(
+            &msg, 
+            &key_ring.ring, 
+            &secret_index_to_test, 
+            &secret_key_to_test
+        );
+        client.init(&key_ring.ring);
+        assert!(client.verify(&msg, &sig));
+        assert_eq!(client.get_login_count(), 1);
     }
 }
