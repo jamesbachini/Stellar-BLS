@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>zkLogin demo</title>
+  <script src="https://unpkg.com/stellar-sdk@latest/dist/stellar-sdk.js"></script>
+  <style>
+    body{font-family:sans-serif;margin:2em auto;max-width:48em}
+    pre {background:#eee;padding:1em}
+  </style>
+</head>
+<body>
+<h1>zkLogin demo</h1>
+
+<div id="status">loading…</div>
+
+<button id="newAccount">Create &amp; fund wallet</button>
+<pre id="account"></pre>
+
+<hr>
+Ring size:
+<input id="ringSize" type="number" value="3" min="1" style="width:4em"/>
+<button id="genRing">Generate &amp; initialise contract</button>
+
+<pre id="ringData"></pre>
+
+<h2>Wallets</h2>
+<div id="walletButtons"></div>
+
+<h2>On-chain login counter: <span id="counter">?</span></h2>
+
+<script>
+const RpcServer = StellarSdk.SorobanRpc?.Server || StellarSdk.rpc.Server;
+const server   = new RpcServer("https://soroban-testnet.stellar.org");
+const network  = StellarSdk.Networks.TESTNET;
+const CONTRACT = "CB3M4D6WDUQKNUHMD76QTEEF6H46J7RDKKSY7YL5RV2U5T6A3NS45WT6";
+
+let sourceKeypair, publicKey;
+let ring = [];
+
+// -----------------------------------------------------------------------------
+// 1. helper
+function qs(id){return document.getElementById(id)}
+function hexToBytes(hex){return Uint8Array.from(hex.match(/../g).map(b=>parseInt(b,16)))}
+
+// -----------------------------------------------------------------------------
+// 2. create + fund account
+qs("newAccount").onclick = async ()=>{
+  sourceKeypair = StellarSdk.Keypair.random();
+  publicKey     = sourceKeypair.publicKey();
+  qs('account').textContent = publicKey;
+  await fetch(`https://friendbot.stellar.org?addr=${publicKey}`);
+  loadCounter();
+};
+
+// -----------------------------------------------------------------------------
+// 3. generate ring (call our Rust back-end)
+qs("genRing").onclick = async ()=>{
+  const size = parseInt(qs("ringSize").value,10);
+  const res = await fetch("/api/generate",{
+    method:"POST",
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({size})
+  }).then(r=>r.json());
+
+  ring = res.ring;      // array of hex pks
+  qs("ringData").textContent = JSON.stringify(ring,null,2);
+
+  // create buttons for every wallet
+  const div = qs("walletButtons");
+  div.innerHTML = "";
+  ring.forEach((_,i)=>{
+     const b = document.createElement("button");
+     b.textContent = `Sign-in with wallet ${i}`;
+     b.onclick = ()=>signIn(i);
+     div.appendChild(b);
+  });
+
+  loadCounter();
+};
+
+// -----------------------------------------------------------------------------
+// 4. sign-in procedure
+async function signIn(idx){
+  const msg = new TextEncoder().encode("Ring sig demo");
+
+  // ask back-end to sign -------------------------------------------------------
+  const sig = await fetch("/api/sign",{
+    method:"POST",
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({wallet:idx,message:"Ring sig demo"})
+  }).then(r=>r.json()).then(r=>r.signature);
+
+  // build invokeContract -------------------------------------------------------
+  if(!sourceKeypair){alert("create/fund a wallet first");return}
+
+  const source   = await server.getAccount(publicKey);
+  const tx       = new StellarSdk.TransactionBuilder(source,{
+                        fee:"100000",
+                        networkPassphrase:network,
+                      })
+                      .addOperation(StellarSdk.Operation.invokeHostFunction({
+                          function:StellarSdk.xdr.HostFunctionType.hostFunctionTypeInvokeContract(),
+                          contract:CONTRACT,
+                          functionName:"verify",
+                          parameters:[
+                            StellarSdk.nativeToScVal(msg,'bytes'),
+                            StellarSdk.nativeToScVal({
+                              challenge: hexToBytes(sig.challenge),
+                              responses: sig.responses.map(hexToBytes)
+                            },{type:'map'})
+                          ]
+                      }))
+                      .setTimeout(30)
+                      .build();
+
+  tx.sign(sourceKeypair);
+
+  try{
+    const {hash} = await server.sendTransaction(tx);
+    console.log("submitted",hash);
+    await loadCounter();
+  }catch(e){
+    console.error(e);
+    alert("tx failed – see console");
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5. read login counter (simulate)
+async function loadCounter(){
+  try{
+      const sim = await server.simulateTransaction({
+          contractId:CONTRACT,
+          function:"get_login_count",
+          args:[]
+      });
+      qs("counter").textContent = sim.result;
+  }catch(e){
+      qs("counter").textContent = "?";
+  }
+}
+
+loadCounter();
+</script>
+</body>
+</html>

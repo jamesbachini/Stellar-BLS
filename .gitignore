@@ -1,6 +1,7 @@
 
 contracts/target
 contracts/test_snapshots
+rslogin/target
 
 # Logs
 logs
