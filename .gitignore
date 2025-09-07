@@ -1,7 +1,7 @@
 
 contracts/target
 contracts/test_snapshots
-rslogin/target
+frontend/experiments/rslogin/target
 
 # Logs
 logs
