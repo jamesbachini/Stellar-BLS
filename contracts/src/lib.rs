@@ -40,6 +40,7 @@ pub struct RingSigContract;
 impl RingSigContract {
 
     pub fn init(env: Env, ring: Vec<BytesN<96>>) {
+        // Note this can be overwritten, call once only in production
         env.storage().persistent().set(&DataKey::Ring, &ring);
         env.storage().persistent().set(&DataKey::LoginCount, &0u64);
     }

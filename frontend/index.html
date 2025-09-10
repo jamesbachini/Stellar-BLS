@@ -543,7 +543,7 @@ async function login(idx){
                     U32(idx),
                     Bytes(keyRing.secret_keys[idx])
                   );
-  const sigJS  = StellarSdk.scValToNative(sigXdr);     // {challenge,responses}
+  const sigJS  = StellarSdk.scValToNative(sigXdr); // {challenge,responses}
   const sigVal = Map([
     ["challenge", Bytes(sigJS.challenge)],
     ["responses", Vec(sigJS.responses.map(Bytes))]
@@ -554,7 +554,6 @@ async function login(idx){
   const ok = StellarSdk.scValToNative(txRes.returnValue);
   if(ok){ setStatus("✅ login successful", true); }
   else  { setStatus("❌ verify returned false", false); }
-
   await refreshCounter();
 }
 
