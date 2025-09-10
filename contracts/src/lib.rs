@@ -242,7 +242,7 @@ mod test {
             ring.push_back(pk);
         }
         let signer = 1usize;
-        let msg = Bytes::from_slice(&env, b"Ring sig demo");
+        let msg = Bytes::from_slice(&env, b"Free Roman Storm");
         let sig = sign(&env, &msg, ring.clone(), signer, &sks[signer]);
         let id = env.register(RingSigContract, ());
         let client = RingSigContractClient::new(&env, &id);
